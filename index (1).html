@@ -1,0 +1,1812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#1E2221" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>Chalkboard Wordle · AR Classroom</title>
+<!--
+  ============================================================================
+  CHALKBOARD WORDLE — AR Classroom Edition (single file)
+  ----------------------------------------------------------------------------
+  How it works, in short:
+    1. Menu ........ vintage chalkboard settings (mode, difficulty, side, code).
+    2. Eraser ...... a felt eraser wipes the menu away (canvas "wipe" mask).
+    3. Calibrate ... rear camera → lightweight CV finds the bright rectangular
+                     whiteboard (whiteness mask + edge barriers + connected
+                     components + 4-corner fit). Locks after ~1 s of stability.
+    4. Play ........ a DOM "board" is warped onto the 4 corners with a CSS
+                     matrix3d (a homography = perspective mapping), so the topic
+                     header and letter lines look painted onto the real board.
+                     Each letter slot is cropped from the camera frame through
+                     the same homography, cleaned up (grayscale → adaptive
+                     threshold → blob filter) and read by Tesseract.js (OCR =
+                     reading text from images), A–Z only.
+    3b. Learn ...... the player first writes A–Z in boxes on the side of the
+                     board; those become personal letter templates (saved in
+                     the browser) that the reader matches against.
+    5. Demo ........ no camera: a simulated whiteboard you can type or draw on.
+
+  Run it: serve over HTTPS or http://localhost (camera needs a secure context),
+  e.g.  npx serve .   or   python3 -m http.server   then open on your phone.
+  Self-hosting Tesseract: define window.TESS_CONFIG = { url, opts:{workerPath,
+  corePath, langPath} } before this page's script runs.
+  ============================================================================
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<!-- Didact Gothic: ball-and-stick schoolhouse penmanship (matches the A–Z chart).
+     Fredericka the Great: hand-drawn chalk titles. Patrick Hand: chalk notes.
+     Permanent Marker: dry-erase handwriting on the demo whiteboard. -->
+<link href="https://fonts.googleapis.com/css2?family=Didact+Gothic&family=Fredericka+the+Great&family=Patrick+Hand&family=Permanent+Marker&display=swap" rel="stylesheet" />
+
+<style>
+/* ==========================================================================
+   1. DESIGN TOKENS — palette taken from the vintage classroom photo
+   ========================================================================== */
+:root{
+  --slate:#1E2221;            /* matte slate chalkboard */
+  --oak:#8B5A2B;              /* aged oak trim */
+  --chalk:#F4F1EA;            /* crisp chalk */
+  --chalk-80:rgba(244,241,234,.8);
+  --chalk-55:rgba(244,241,234,.55);
+  --chalk-30:rgba(244,241,234,.3);
+  --chalk-15:rgba(244,241,234,.15);
+  --green:#5E8C61;            /* correct letter + spot (sage chalk) */
+  --ochre:#D4A359;            /* correct letter, wrong spot (mustard chalk) */
+  --gray:#4A504E;             /* not in word (faded slate) */
+  --f-title:'Fredericka the Great','Didact Gothic',Georgia,serif;
+  --f-pen:'Didact Gothic','Century Gothic','Avenir Next','Futura',sans-serif;
+  --f-hand:'Patrick Hand','Comic Sans MS','Chalkboard SE',cursive;
+  --safe-t:env(safe-area-inset-top,0px);
+  --safe-b:env(safe-area-inset-bottom,0px);
+  --hand-r:255px 15px 225px 15px/15px 225px 15px 255px;   /* hand-drawn border trick */
+  /* chalk-dust grain (SVG turbulence noise tinted chalk-white) */
+  --grain:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='240' height='240'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .96  0 0 0 0 .95  0 0 0 0 .92  0 0 0 .55 -.2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--slate);color:var(--chalk);
+  font-family:var(--f-pen);-webkit-font-smoothing:antialiased;overscroll-behavior:none;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;touch-action:manipulation}
+input{font:inherit}
+[hidden]{display:none!important}
+
+/* ==========================================================================
+   2. CHALKBOARD SURFACE, WOOD FRAME & CHALK TEXT
+   ========================================================================== */
+.chalkboard{
+  background:
+    var(--grain),
+    radial-gradient(60% 22% at 28% 18%, rgba(244,241,234,.06), transparent 70%),
+    radial-gradient(45% 28% at 78% 62%, rgba(244,241,234,.045), transparent 70%),
+    radial-gradient(70% 16% at 45% 86%, rgba(244,241,234,.04), transparent 70%),
+    radial-gradient(130% 100% at 50% 45%, transparent 55%, rgba(0,0,0,.5)),
+    var(--slate);
+}
+.wood-frame{position:absolute;inset:0;pointer-events:none;z-index:2;border:10px solid var(--oak);
+  border-image:repeating-linear-gradient(100deg,#93602f 0 9px,#7c4f25 9px 13px,#a06d3a 13px 26px,#85562a 26px 31px) 10;
+  box-shadow:inset 0 0 0 2px rgba(0,0,0,.35), inset 0 6px 24px rgba(0,0,0,.55)}
+.chalk-text{color:var(--chalk);text-shadow:0 0 1px rgba(244,241,234,.9),0 0 9px rgba(244,241,234,.28);filter:url(#chalk)}
+
+/* ==========================================================================
+   3. LANDING MENU
+   ========================================================================== */
+#menu{position:fixed;inset:0;z-index:10;display:flex;flex-direction:column}
+#menu.fade-in{animation:fadeIn .6s ease both}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.menu-scroll{position:relative;z-index:1;flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;
+  padding:calc(54px + var(--safe-t)) 22px calc(130px + var(--safe-b));display:flex;justify-content:center}
+.menu-inner{width:100%;max-width:560px;display:flex;flex-direction:column;gap:16px}
+
+/* Title with penmanship guide lines (top line, dashed midline, baseline) + stroke numbers */
+.title{position:relative;margin:0 auto;font-family:var(--f-title);font-weight:400;
+  font-size:clamp(56px,17vw,124px);line-height:1;letter-spacing:.05em;display:flex;justify-content:center;gap:.03em;padding:.12em .1em 0}
+.title::before{content:"";position:absolute;left:-7%;right:-7%;top:.2em;height:.74em;z-index:-1;
+  background:
+    linear-gradient(var(--chalk-30),var(--chalk-30)) left top/100% 2px no-repeat,
+    linear-gradient(90deg,var(--chalk-30) 55%,transparent 0) left 50%/18px 2px repeat-x,
+    linear-gradient(var(--chalk-55),var(--chalk-55)) left bottom/100% 3px no-repeat}
+.title span{position:relative;display:inline-block;animation:chalkIn .55s both;animation-delay:calc(var(--i)*95ms + .15s)}
+.title span::before{content:attr(data-n);position:absolute;top:.02em;left:.04em;font:400 .12em/1 var(--f-pen);letter-spacing:.3em;color:var(--chalk-55);white-space:nowrap}
+@keyframes chalkIn{from{opacity:0;clip-path:inset(0 100% 0 0)}to{opacity:1;clip-path:inset(0 0 0 0)}}
+.subtitle{margin:-4px 0 4px;text-align:center;font-family:var(--f-hand);font-size:19px;color:var(--chalk-55)}
+
+/* Section labels styled like a ruled penmanship line */
+.label{display:flex;align-items:baseline;gap:8px;font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:var(--chalk-80);
+  padding:3px 2px 4px;margin-bottom:9px;
+  background:linear-gradient(var(--chalk-15),var(--chalk-15)) left top/100% 1px no-repeat,
+    linear-gradient(90deg,var(--chalk-30) 55%,transparent 0) left 55%/12px 1px repeat-x,
+    linear-gradient(var(--chalk-55),var(--chalk-55)) left bottom/100% 1.5px no-repeat}
+.label .n{font-size:11px;color:var(--chalk-55);letter-spacing:0}
+
+/* Option chips = chalk sketches */
+.chips{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px}
+.chip{position:relative;padding:12px 8px 10px;border:2px solid var(--chalk-30);border-radius:var(--hand-r);
+  font-size:18px;line-height:1.15;color:var(--chalk-80);text-align:center;transition:background .2s,color .2s,border-color .2s,transform .1s}
+.chip small{display:block;margin-top:4px;font-family:var(--f-hand);font-size:14px;color:var(--chalk-55)}
+.chip[aria-pressed="true"]{color:var(--chalk);border-color:var(--chalk-80);background:rgba(244,241,234,.07);box-shadow:0 0 14px rgba(244,241,234,.1)}
+.chip[aria-pressed="true"]::after{content:"";position:absolute;inset:-6px -5px -5px -7px;border:2px solid rgba(244,241,234,.5);
+  border-radius:225px 25px 255px 20px/25px 255px 20px 225px;transform:rotate(-1.2deg);pointer-events:none}
+.chip:active{transform:scale(.97)}
+.code-row{margin-top:12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-family:var(--f-hand);font-size:17px;color:var(--chalk-80)}
+.code-row input{width:5.2ch;padding:2px 4px;background:transparent;border:0;border-bottom:2px dashed var(--chalk-55);
+  color:var(--chalk);font-family:var(--f-pen);font-size:24px;letter-spacing:.2em;text-align:center;outline:none;-webkit-user-select:text;user-select:text}
+.code-row small{flex-basis:100%;font-size:14px;color:var(--chalk-55)}
+.link-btn{font-family:var(--f-hand);font-size:16px;color:var(--chalk-80);text-decoration:underline dashed;text-underline-offset:4px}
+
+.start-btn{position:relative;align-self:center;margin-top:8px;padding:16px 34px 12px;font-family:var(--f-title);
+  font-size:clamp(26px,7.5vw,38px);letter-spacing:.08em;border:3px solid var(--chalk);border-radius:var(--hand-r);
+  text-shadow:0 0 8px rgba(244,241,234,.35);transition:transform .12s}
+.start-btn::after{content:"";position:absolute;inset:5px;border:1.5px dashed var(--chalk-30);border-radius:inherit}
+.start-btn:active{transform:scale(.97)}
+.demo-note{text-align:center;margin:0;font-family:var(--f-hand);font-size:16px;color:var(--ochre)}
+
+/* Corner buttons: help (left) + subtle demo toggle styled like a chalk stick (right) */
+.corner{position:absolute;top:calc(18px + var(--safe-t));z-index:3;display:flex;align-items:center;gap:6px;padding:6px 10px;
+  font-family:var(--f-hand);font-size:15px;color:var(--chalk-55);border:1.5px dashed transparent;border-radius:var(--hand-r)}
+.corner.help{left:18px;width:34px;height:34px;justify-content:center;border-color:var(--chalk-30);font-family:var(--f-title);font-size:18px}
+.corner.demo{right:18px}
+.corner.demo svg{width:22px;height:22px}
+.corner.demo[aria-pressed="true"]{color:var(--chalk);border-color:var(--chalk-30);background:rgba(212,163,89,.12)}
+
+/* Wooden chalk ledge with chalk sticks — the eraser rests here */
+.ledge{position:absolute;left:0;right:0;bottom:0;z-index:2;height:calc(30px + var(--safe-b));
+  background:repeating-linear-gradient(92deg,rgba(0,0,0,0) 0 14px,rgba(60,30,8,.18) 14px 16px,rgba(0,0,0,0) 16px 37px),
+    linear-gradient(180deg,#b07c46 0,#8B5A2B 28%,#6d431d 100%);
+  box-shadow:0 -4px 14px rgba(0,0,0,.55), inset 0 2px 0 rgba(255,255,255,.18)}
+.chalk-stick{position:absolute;top:-7px;height:9px;border-radius:3px;background:linear-gradient(#fffdf6,#d6d1c4);box-shadow:0 1px 2px rgba(0,0,0,.45)}
+
+/* ==========================================================================
+   4. FELT ERASER + WIPE TRANSITION
+   ========================================================================== */
+#eraser{position:fixed;left:0;top:0;z-index:40;width:var(--eL,200px);height:var(--eS,76px);transform-origin:50% 50%;
+  will-change:transform;pointer-events:none;display:flex;flex-direction:column;filter:drop-shadow(0 8px 10px rgba(0,0,0,.55))}
+.er-wood{position:relative;flex:0 0 64%;border-radius:10px 10px 4px 4px;
+  background:repeating-linear-gradient(178deg,rgba(0,0,0,0) 0 5px,rgba(60,30,8,.2) 5px 6px,rgba(0,0,0,0) 6px 11px),
+    linear-gradient(180deg,#b17a43,#8B5A2B 55%,#6c421d);
+  box-shadow:inset 0 2px 0 rgba(255,255,255,.25), inset 0 -3px 6px rgba(0,0,0,.35)}
+.er-wood span{position:absolute;inset:0;display:grid;place-items:center;font:600 11px/1 var(--f-pen);letter-spacing:.32em;color:rgba(40,20,5,.55);text-shadow:0 1px 0 rgba(255,255,255,.2)}
+.er-felt{flex:1;border-radius:0 0 7px 7px;box-shadow:inset 0 2px 3px rgba(0,0,0,.5);
+  background:linear-gradient(180deg,rgba(244,241,234,0),rgba(244,241,234,.3)),
+    repeating-linear-gradient(90deg,#3b3f3e 0 4px,#474c4a 4px 7px,#353938 7px 10px)}
+#wipe,#dust{position:fixed;inset:0;width:100%;height:100%;pointer-events:none}
+#wipe{z-index:35;transition:opacity .75s ease}
+#dust{z-index:39}
+#slateMsg{position:fixed;left:0;right:0;top:46%;z-index:36;text-align:center;font-family:var(--f-hand);font-size:22px;color:var(--chalk-80);
+  animation:pulse 1.6s ease-in-out infinite;pointer-events:none}
+@keyframes pulse{50%{opacity:.45}}
+
+/* ==========================================================================
+   5. AR STAGE (camera / demo + projected board + calibration UI)
+   ========================================================================== */
+#stage{position:fixed;inset:0;z-index:5;background:#000;overflow:hidden}
+#video,#demoCanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+#demoCanvas{touch-action:none}
+#boardLayer{position:absolute;inset:0;pointer-events:none;overflow:hidden}
+#board{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform;font-family:var(--f-pen);color:var(--chalk)}
+#calibCanvas,#fxCanvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#fxCanvas{z-index:13}
+
+/* --- Projected board (all sizes are in "board units": board is 1000 wide) --- */
+.b-tint{position:absolute;inset:0;border-radius:8px;background:var(--grain),rgba(26,30,29,.56)}
+.b-outline{position:absolute;inset:0;border:5px dashed rgba(244,241,234,.5);border-radius:8px}
+.b-header{position:absolute;display:flex;align-items:flex-end;justify-content:center;white-space:nowrap;letter-spacing:.1em;line-height:1;
+  text-shadow:0 0 4px rgba(0,0,0,.7),0 0 14px rgba(244,241,234,.35)}
+.b-header::before{content:"";position:absolute;inset:4% 0 0;
+  background:linear-gradient(rgba(244,241,234,.45),rgba(244,241,234,.45)) left top/100% 3px no-repeat,
+    linear-gradient(90deg,rgba(244,241,234,.5) 55%,transparent 0) left 52%/26px 3px repeat-x,
+    linear-gradient(var(--chalk),var(--chalk)) left bottom/100% 5px no-repeat}
+.b-header span{position:relative;padding-bottom:.06em}
+.b-divider{position:absolute;width:0;border-left:5px dashed rgba(244,241,234,.55)}
+.zlabel{position:absolute;display:flex;align-items:center;justify-content:center;letter-spacing:.22em;text-shadow:0 0 4px rgba(0,0,0,.7)}
+.zone.off{opacity:.38}
+.brow.hidden{display:none}
+.rnum{position:absolute;text-align:right;color:rgba(244,241,234,.65);text-shadow:0 0 3px #000}
+.slot{position:absolute;border-radius:calc(var(--s)*.06);--tile:transparent}
+.slot::before{content:"";position:absolute;left:0;right:0;top:0;height:var(--lw);background:rgba(244,241,234,.42);box-shadow:0 0 0 1px rgba(20,24,23,.25)}
+.slot .mid{position:absolute;left:0;right:0;top:calc(50% - var(--lw)/2);height:var(--lw);
+  background:linear-gradient(90deg,rgba(244,241,234,.55) 55%,transparent 0) 0 0/calc(var(--s)*.14) 100% repeat-x}
+.slot::after{content:"";position:absolute;left:-3%;right:-3%;bottom:calc(var(--bw)*-.5);height:var(--bw);border-radius:var(--bw);
+  background:var(--chalk);transform-origin:left center;
+  box-shadow:0 0 0 var(--lw) rgba(20,24,23,.6),0 0 calc(var(--bw)*2.5) rgba(244,241,234,.45)}
+.brow.appear .slot::after{animation:drawLine .45s var(--d) ease-out both}
+.brow.live .slot::after{animation:glow 1.8s ease-in-out infinite}
+.brow.live.appear .slot::after{animation:drawLine .45s var(--d) ease-out both, glow 1.8s calc(var(--d) + .5s) ease-in-out infinite}
+@keyframes drawLine{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@keyframes glow{50%{box-shadow:0 0 0 var(--lw) rgba(20,24,23,.6),0 0 calc(var(--bw)*6) rgba(244,241,234,.85)}}
+.slot .cap{position:absolute;left:-30%;right:-30%;top:calc(100% + var(--bw)*1.2);text-align:center;font-style:normal;
+  font-size:calc(var(--s)*.22);line-height:1;opacity:0;text-shadow:0 0 3px #000,0 0 6px #000;transition:opacity .2s}
+.slot.has .cap{opacity:1}
+.slot.manual .cap{color:var(--ochre)}
+.slot.unk .cap{color:#f0a9a0}
+.slot .big{position:absolute;inset:0;display:grid;place-items:center;font-weight:400;font-size:calc(var(--s)*.66);line-height:1;opacity:0;
+  text-shadow:0 1px 3px rgba(0,0,0,.45)}
+.slot.g{--tile:rgba(94,140,97,.9)} .slot.y{--tile:rgba(212,163,89,.92)} .slot.x{--tile:rgba(74,80,78,.92)}
+.slot.res{background-image:var(--grain);background-color:var(--tile);animation:flip .55s var(--fd,0s) ease-in-out both}
+.slot.res .big{animation:showBig .55s var(--fd,0s) both}
+.slot.res.instant,.slot.res.instant .big{animation:none;opacity:1}
+.slot.res::before,.slot.res .mid,.slot.res .cap{opacity:0}
+.slot.res::after{background:rgba(244,241,234,.75)}
+.slot.y .big{color:#1E2221;text-shadow:none}
+@keyframes flip{0%{transform:rotateX(0);background-color:transparent}49%{transform:rotateX(88deg);background-color:transparent}
+  51%{transform:rotateX(88deg);background-color:var(--tile)}100%{transform:rotateX(0);background-color:var(--tile)}}
+@keyframes showBig{0%,50%{opacity:0}51%,100%{opacity:1}}
+.brow.shake{animation:shake .4s}
+@keyframes shake{20%,60%{transform:translateX(-1.2%)}40%,80%{transform:translateX(1.2%)}}
+.astrip.off{opacity:.35}
+#board:not(.learning) .astrip{opacity:.55}
+#board.learning .zone,#board.learning .b-divider{display:none}
+.acell{position:absolute;border:var(--lw) dashed rgba(244,241,234,.55);border-radius:calc(var(--s)*.08);box-shadow:0 0 0 1px rgba(20,24,23,.35);transition:background-color .3s,border-color .3s}
+.acell .alab{position:absolute;left:5%;top:3%;font-style:normal;font-size:calc(var(--s)*.26);line-height:1;color:rgba(244,241,234,.8);text-shadow:0 0 3px #000}
+.acell.wip{border-style:solid;border-color:var(--ochre)}
+.acell.saved{border-color:rgba(160,205,163,.75)}
+.acell.ok{border-style:solid;border-color:#a7d6aa;background:rgba(94,140,97,.3)}
+.acell.ok::after,.acell.saved::after{content:"✓";position:absolute;right:6%;bottom:2%;font-size:calc(var(--s)*.3);line-height:1;color:#c6ebc8;text-shadow:0 0 3px #000}
+.b-header.long{font-size:calc(var(--hh)*.42)!important}
+.lockbar{position:absolute;height:calc(var(--bw)*1.3);border-radius:var(--bw);overflow:hidden;pointer-events:none}
+.lockbar b{display:block;height:100%;width:0;background:var(--ochre);box-shadow:0 0 calc(var(--bw)*2) var(--ochre);transition:width .35s linear}
+
+/* --- Calibration --- */
+#scanFrame{position:absolute;left:50%;top:45%;width:min(86vw,calc(56vh * 1.6));aspect-ratio:1.6;transform:translate(-50%,-50%);
+  border:3px dashed rgba(244,241,234,.75);border-radius:14px 6px 16px 8px;box-shadow:0 0 0 9999px rgba(30,34,33,.32);pointer-events:none}
+#scanFrame i{position:absolute;width:28px;height:28px;border:0 solid var(--chalk);filter:drop-shadow(0 0 4px rgba(244,241,234,.6))}
+#scanFrame .tl{left:-6px;top:-6px;border-left-width:5px;border-top-width:5px;border-radius:8px 0 0 0}
+#scanFrame .tr{right:-6px;top:-6px;border-right-width:5px;border-top-width:5px;border-radius:0 8px 0 0}
+#scanFrame .br{right:-6px;bottom:-6px;border-right-width:5px;border-bottom-width:5px;border-radius:0 0 8px 0}
+#scanFrame .bl{left:-6px;bottom:-6px;border-left-width:5px;border-bottom-width:5px;border-radius:0 0 0 8px}
+.calib-prompt{position:absolute;left:50%;bottom:calc(26px + var(--safe-b));transform:translateX(-50%);width:min(92vw,520px);z-index:6;
+  padding:14px 18px 12px;text-align:center;font-family:var(--f-hand);font-size:19px;line-height:1.3;
+  background:rgba(30,34,33,.86);border:2px solid var(--chalk-30);border-radius:var(--hand-r);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.calib-prompt .bar{height:4px;margin:10px 0 4px;border-radius:2px;overflow:hidden;background:var(--chalk-15)}
+.calib-prompt .bar b{display:block;height:100%;width:0;background:var(--chalk);transition:width .15s}
+
+/* ==========================================================================
+   6. HUD, KEYBOARD, BANNERS, TOASTS
+   ========================================================================== */
+.hud-top{position:absolute;left:10px;right:10px;top:calc(10px + var(--safe-t));z-index:8;display:flex;align-items:center;gap:8px;pointer-events:none}
+.hud-top>*{pointer-events:auto}
+.ibtn{flex:0 0 auto;width:42px;height:42px;border-radius:50%;display:grid;place-items:center;background:rgba(30,34,33,.74);
+  border:1.5px solid var(--chalk-30);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.ibtn svg,.abtn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.ibtn[aria-pressed="true"]{background:rgba(212,163,89,.28);border-color:var(--ochre)}
+.status{flex:1;min-width:0;text-align:center;font-family:var(--f-hand);font-size:16px;padding:9px 14px;border-radius:999px;
+  background:rgba(30,34,33,.74);border:1.5px solid var(--chalk-15);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+#ocrStrip{position:absolute;top:calc(62px + var(--safe-t));left:10px;right:10px;z-index:8;display:flex;flex-wrap:wrap;gap:6px;pointer-events:none}
+#ocrStrip figure{margin:0;padding:2px;border-radius:4px;background:#fff;color:#111;text-align:center;font:600 12px/1.2 var(--f-pen)}
+#ocrStrip figure.empty{background:rgba(255,255,255,.35)}
+#ocrStrip canvas{display:block;height:44px;width:auto}
+.hud-bottom{position:absolute;left:0;right:0;bottom:0;z-index:8;padding:8px 10px calc(10px + var(--safe-b));display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+.hud-bottom>*{pointer-events:auto}
+.actions{display:flex;gap:8px;justify-content:center;width:100%;max-width:640px}
+.abtn{min-height:46px;padding:10px 16px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:16px;
+  background:rgba(30,34,33,.84);border:2px solid var(--chalk-55);border-radius:var(--hand-r);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.abtn.lock{flex:1;max-width:260px;border-color:var(--chalk);letter-spacing:.06em}
+.abtn.icon{flex:0 0 auto;padding:10px 14px}
+.abtn[aria-pressed="true"]{border-color:var(--ochre);background:rgba(212,163,89,.2)}
+.abtn:active{transform:scale(.97)}
+#keyboard{width:100%;max-width:560px;padding:8px 6px 4px;border-radius:14px;background:rgba(30,34,33,.88);border:1.5px solid var(--chalk-15);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.kb-tabs{display:flex;justify-content:center;gap:6px;margin-bottom:8px}
+.kb-tab{padding:4px 14px;border-radius:999px;border:1.5px solid var(--chalk-15);font-size:14px;color:var(--chalk-80)}
+.kb-tab[aria-pressed="true"]{border-color:var(--chalk);background:rgba(244,241,234,.1);color:var(--chalk)}
+.kb-row{display:flex;justify-content:center;gap:5px;margin-bottom:5px}
+.key{flex:1 1 0;max-width:46px;height:44px;border-radius:7px;font-size:18px;background:rgba(244,241,234,.08);border:1px solid var(--chalk-15);transition:background .3s}
+.key.wide{flex:1.6 1 0;max-width:76px;font-size:13px;letter-spacing:.06em}
+.key.g{background:var(--green);border-color:transparent}
+.key.y{background:var(--ochre);color:var(--slate);border-color:transparent}
+.key.x{background:var(--gray);color:var(--chalk-55);border-color:transparent}
+.key:active{transform:translateY(1px)}
+
+.banner{position:absolute;inset:0;z-index:12;display:grid;place-items:center;padding:20px;pointer-events:none}
+.banner.modal{pointer-events:auto;background:rgba(10,12,12,.5)}
+.banner.info{align-items:start;padding-top:calc(64px + var(--safe-t))}
+.banner.info .banner-card{padding:12px 16px 10px}
+.banner.info h2{font-size:clamp(24px,6.5vw,38px);margin:0 0 4px}
+.banner.info p{font-size:16px;margin:2px 0}
+#help{position:fixed;z-index:50}
+.banner-card{pointer-events:auto;width:min(92vw,500px);max-height:88vh;overflow:auto;padding:22px 20px 20px;text-align:center;
+  border:10px solid var(--oak);border-image:repeating-linear-gradient(100deg,#93602f 0 9px,#7c4f25 9px 13px,#a06d3a 13px 26px,#85562a 26px 31px) 10;
+  box-shadow:0 18px 50px rgba(0,0,0,.65);animation:pop .45s cubic-bezier(.2,1.4,.4,1) both}
+@keyframes pop{from{transform:scale(.85) rotate(-1deg);opacity:0}to{transform:none;opacity:1}}
+.banner-card h2{margin:4px 0 8px;font-family:var(--f-title);font-weight:400;font-size:clamp(28px,8.5vw,50px);line-height:1.08;letter-spacing:.03em}
+.write-on{animation:writeOn 1s .15s ease-out both}
+@keyframes writeOn{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+.banner-card p{margin:6px 0;font-family:var(--f-hand);font-size:19px;color:var(--chalk-80)}
+.banner-card p.note{font-size:15px;color:var(--chalk-55)}
+.banner-btns{display:flex;flex-wrap:wrap;justify-content:center;gap:10px;margin-top:14px}
+.banner-btns .abtn{min-width:130px}
+.word-tiles{display:flex;justify-content:center;gap:6px;margin:10px 0 6px}
+.word-tiles span{width:36px;height:42px;display:grid;place-items:center;font-size:23px;border-radius:4px;background-image:var(--grain);
+  background-color:var(--green);animation:tileIn .4s both}
+.word-tiles.lost span{background-color:var(--gray)}
+@keyframes tileIn{from{transform:rotateX(90deg)}to{transform:none}}
+.help-list{text-align:left;margin:6px 0 4px;padding-left:22px;font-family:var(--f-hand);font-size:18px;line-height:1.35;color:var(--chalk-80)}
+.help-list li{margin:5px 0}
+#toast{position:absolute;left:50%;top:calc(64px + var(--safe-t));z-index:11;transform:translate(-50%,-10px);opacity:0;transition:.25s;
+  padding:8px 16px;font-family:var(--f-hand);font-size:17px;border-radius:999px;background:rgba(30,34,33,.92);border:1.5px solid var(--chalk-30);
+  pointer-events:none;white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media (max-height:620px){ .key{height:34px} .kb-row{margin-bottom:4px} .title{font-size:clamp(48px,13vw,90px)} .banner-card{padding:14px 16px} .banner-card h2{font-size:30px} .word-tiles span{width:28px;height:32px;font-size:18px} .banner.info .banner-card{width:min(92vw,400px)} .banner.info h2{font-size:24px} }
+@media (prefers-reduced-motion:reduce){ *{animation-duration:.01ms!important;transition-duration:.01ms!important} }
+</style>
+</head>
+<body>
+
+<!-- SVG filter that gives text a rough, grainy chalk look -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <filter id="chalk" x="-8%" y="-8%" width="116%" height="116%">
+    <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="2" seed="4" result="warp"/>
+    <feDisplacementMap in="SourceGraphic" in2="warp" scale="3" xChannelSelector="R" yChannelSelector="G" result="rough"/>
+    <feTurbulence type="fractalNoise" baseFrequency="1.4" numOctaves="1" seed="11" result="grain"/>
+    <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -3 0 0 0 2.4" result="mask"/>
+    <feComposite in="rough" in2="mask" operator="in"/>
+  </filter>
+</svg>
+
+<!-- =====================================================================
+     PHASE 1 — LANDING MENU
+     ===================================================================== -->
+<section id="menu" class="chalkboard" aria-label="Game menu">
+  <div class="wood-frame"></div>
+  <button id="helpBtn" class="corner help" aria-label="How to play">?</button>
+  <button id="demoToggle" class="corner demo" aria-pressed="false" title="Demo / No-Camera Test Mode">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="10" width="16" height="5.5" rx="2" fill="#F4F1EA" opacity=".9" transform="rotate(-24 11 12.5)"/><circle cx="20" cy="6" r="1" fill="#F4F1EA" opacity=".5"/><circle cx="18" cy="4" r=".7" fill="#F4F1EA" opacity=".4"/></svg>
+    <span>Demo</span>
+  </button>
+
+  <div class="menu-scroll">
+    <div class="menu-inner">
+      <h1 class="title chalk-text" aria-label="WORDLE">
+        <span style="--i:0" data-n="1 2">W</span><span style="--i:1" data-n="1">O</span><span style="--i:2" data-n="1 2">R</span><span style="--i:3" data-n="1 2">D</span><span style="--i:4" data-n="1 2">L</span><span style="--i:5" data-n="1 2 3">E</span>
+      </h1>
+      <p class="subtitle">the word game you play on a real whiteboard</p>
+
+      <div class="group">
+        <div class="label"><span class="n">1</span>Game mode</div>
+        <div class="chips" data-key="mode">
+          <button class="chip" data-v="solo">Solo<small>1 player</small></button>
+          <button class="chip" data-v="duo">Head-to-Head<small>2 players · race</small></button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="label"><span class="n">2</span>Difficulty</div>
+        <div class="chips" data-key="difficulty">
+          <button class="chip" data-v="easy">Easy<small>cat · tree · book</small></button>
+          <button class="chip" data-v="medium">Medium<small>sloth · anchor</small></button>
+          <button class="chip" data-v="hard">Hard<small>hoopoe · zephyr</small></button>
+        </div>
+      </div>
+
+      <div class="group">
+        <div class="label"><span class="n">3</span>Topic</div>
+        <div class="chips" data-key="topic">
+          <button class="chip" data-v="Animals">Animals<small>sloth · panda</small></button>
+          <button class="chip" data-v="Food">Food<small>mango · bagel</small></button>
+          <button class="chip" data-v="mix">Both<small>surprise me</small></button>
+        </div>
+      </div>
+
+      <div class="group" id="sideGroup" hidden>
+        <div class="label"><span class="n">4</span>This phone watches</div>
+        <div class="chips" data-key="side">
+          <button class="chip" data-v="p1">Player 1<small>left side</small></button>
+          <button class="chip" data-v="p2">Player 2<small>right side</small></button>
+          <button class="chip" data-v="both">Both<small>split board</small></button>
+        </div>
+        <div class="code-row" id="codeRow" hidden>
+          <span>Game code</span>
+          <input id="codeInput" inputmode="numeric" maxlength="4" aria-label="Game code" />
+          <button id="codeDice" class="link-btn" type="button">new code</button>
+          <small>Use the same code on both phones so you race for the same secret word.</small>
+        </div>
+      </div>
+
+      <button id="startBtn" class="start-btn chalk-text">START GAME</button>
+      <p class="demo-note" id="demoNote" hidden>Demo mode is on: no camera needed, you get a practice whiteboard.</p>
+    </div>
+  </div>
+
+  <div class="ledge" aria-hidden="true">
+    <span class="chalk-stick" style="left:12%;width:46px;transform:rotate(-2deg)"></span>
+    <span class="chalk-stick" style="left:22%;width:28px;transform:rotate(3deg)"></span>
+    <span class="chalk-stick" style="left:31%;width:18px;background:linear-gradient(#f3e6c4,#d4c294)"></span>
+  </div>
+</section>
+
+<!-- Felt eraser (rests on the ledge, then sweeps the board) + wipe canvases -->
+<div id="eraser" aria-hidden="true"><div class="er-wood"><span>FELT · No.7</span></div><div class="er-felt"></div></div>
+<canvas id="wipe" hidden></canvas>
+<canvas id="dust" hidden></canvas>
+<div id="slateMsg" hidden></div>
+
+<!-- How-to-play sheet -->
+<div id="help" class="banner modal" hidden>
+  <div class="banner-card chalkboard" role="dialog" aria-label="How to play">
+    <h2 class="chalk-text">How to play</h2>
+    <ol class="help-list">
+      <li>Prop the phone so its back camera sees the whole whiteboard.</li>
+      <li>Wait for <b>Whiteboard Detected!</b> The topic and blank lines appear on screen, "projected" onto the board.</li>
+      <li>First, write A–Z once in the small boxes on the side of the board. The game learns how <i>you</i> write each letter (it remembers it next time).</li>
+      <li>Write one CAPITAL letter on each line with a dry-erase marker.</li>
+      <li>Step out of the way. After about 2 steady seconds the guess locks in and the tiles turn green, ochre or gray.</li>
+      <li>Write your next guess on the new row below. You get 6 tries.</li>
+    </ol>
+    <p class="note">Head-to-Head: one phone can watch both halves of the board, or each player can use their own phone with the same game code. If a letter is misread, tap ⌨ and type the word instead.</p>
+    <div class="banner-btns"><button id="helpClose" class="abtn lock">Got it</button></div>
+  </div>
+</div>
+
+<!-- =====================================================================
+     PHASES 2 + 3 — AR STAGE
+     ===================================================================== -->
+<main id="stage" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="demoCanvas" hidden></canvas>
+  <div id="boardLayer" hidden><div id="board"></div></div>
+  <canvas id="calibCanvas"></canvas>
+
+  <div id="calibUI" hidden>
+    <div id="scanFrame"><i class="tl"></i><i class="tr"></i><i class="br"></i><i class="bl"></i></div>
+    <div class="calib-prompt">
+      <div id="calibText">Point your camera at the classroom whiteboard…</div>
+      <div class="bar"><b id="calibBar"></b></div>
+      <button id="useFrameBtn" class="link-btn" hidden>Can't find it? Line the board up with the dashed frame and tap here</button>
+    </div>
+  </div>
+
+  <header class="hud-top">
+    <button id="menuBtn" class="ibtn" aria-label="Back to menu"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+    <div id="status" class="status" role="status">…</div>
+    <button id="rescanBtn" class="ibtn" aria-label="Re-scan the whiteboard" title="Re-scan board"><svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg></button>
+    <button id="pinBtn" class="ibtn" aria-pressed="false" aria-label="Freeze the overlay in place" title="Freeze overlay (use when the phone is on a stand)"><svg viewBox="0 0 24 24"><path d="M9 3h6l-1 6 3 3H7l3-3z"/><path d="M12 12v9"/></svg></button>
+    <button id="eyeBtn" class="ibtn" aria-pressed="false" aria-label="Show what the letter reader sees" title="Show OCR crops"><svg viewBox="0 0 24 24"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></button>
+  </header>
+  <div id="ocrStrip" hidden></div>
+
+  <footer class="hud-bottom" id="hudBottom" hidden>
+    <div id="keyboard" hidden>
+      <div id="kbTabs" class="kb-tabs" hidden>
+        <button class="kb-tab" data-p="0">Player 1 types</button>
+        <button class="kb-tab" data-p="1">Player 2 types</button>
+      </div>
+      <div id="kbKeys"></div>
+    </div>
+    <div class="actions" id="learnBar" hidden>
+      <button id="learnReset" class="abtn icon" title="Forget my saved handwriting">Reset</button>
+      <button id="learnFill" class="abtn" hidden>Write A–Z for me</button>
+      <button id="learnDone" class="abtn lock"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-11"/></svg><span>Done · Start game</span></button>
+    </div>
+    <div class="actions" id="gameBar">
+      <button id="lockP1" class="abtn lock"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-11"/></svg><span>Lock Guess</span></button>
+      <button id="kbBtn" class="abtn icon" aria-pressed="false" aria-label="Type letters"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
+      <button id="wipeBtn" class="abtn icon" aria-label="Wipe current row" hidden><svg viewBox="0 0 24 24"><path d="M4 15l7-7 7 7-5 5H9z"/><path d="M14 20h7"/></svg></button>
+      <button id="lockP2" class="abtn lock" hidden><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-11"/></svg><span>P2 · Lock</span></button>
+    </div>
+  </footer>
+
+  <canvas id="fxCanvas"></canvas>
+  <div id="toast" aria-live="polite"></div>
+  <div id="banner" class="banner" hidden></div>
+</main>
+
+<noscript><p style="padding:20px">This game needs JavaScript.</p></noscript>
+
+<script>
+'use strict';
+/* ==========================================================================
+   0. SMALL HELPERS
+   ========================================================================== */
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const easeInOut = t => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const randCode = () => String(Math.floor(1000 + Math.random() * 9000));
+function hashStr(s) { let h = 2166136261 >>> 0; for (const c of s) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+/* ==========================================================================
+   1. CURATED WORD BANK — by topic and familiarity (not by length)
+   ========================================================================== */
+const W = s => s.trim().split(/\s+/);
+const WORD_BANK = {
+  Animals: {
+    easy:   W('CAT DOG COW PIG HEN FOX OWL BEE ANT BAT RAT YAK EMU APE FISH FROG DUCK BEAR LION GOAT DEER SEAL WOLF BIRD CRAB MOLE TOAD SWAN LAMB PONY MOUSE HORSE SHEEP SNAKE WHALE'),
+    medium: W('SLOTH ZEBRA CAMEL OTTER MOOSE LLAMA PANDA TIGER EAGLE SHARK SQUID KOALA HIPPO BISON HYENA RAVEN STORK RABBIT TURTLE BEAVER DONKEY PARROT WALRUS FALCON JAGUAR LIZARD MONKEY BADGER FERRET PIGEON GIRAFFE PENGUIN DOLPHIN HAMSTER OCTOPUS'),
+    hard:   W('HOOPOE QUOKKA AXOLOTL NARWHAL OKAPI TAPIR IBEX GNU LYNX WOMBAT OCELOT BONOBO DUGONG JERBOA SERVAL CARACAL GHARIAL TARSIER CHAMOIS PANGOLIN MARMOSET KINKAJOU AARDVARK PLATYPUS CAPYBARA'),
+  },
+  Food: {
+    easy:   W('PIE EGG JAM TEA BUN NUT FIG HAM OAT RICE CAKE MILK CORN SOUP PEAR PLUM BEAN KIWI LIME TACO CHIPS BREAD APPLE PIZZA HONEY PEACH JUICE CANDY'),
+    medium: W('MANGO BAGEL PASTA CURRY LEMON OLIVE GRAPE TOAST SALAD MELON ONION GARLIC NOODLE CARROT CHEESE BUTTER PEPPER WAFFLE MUFFIN PICKLE TOMATO CEREAL CHERRY BANANA BURGER POTATO YOGURT PRETZEL AVOCADO PANCAKE SANDWICH'),
+    hard:   W('QUINOA GNOCCHI KUMQUAT SAFFRON QUICHE BRIOCHE LYCHEE TAHINI WASABI JICAMA SORBET FENNEL ANCHOVY PAPRIKA RISOTTO BAKLAVA CHUTNEY ZUCCHINI COUSCOUS TIRAMISU TAMARIND FOCACCIA KOHLRABI'),
+  },
+};
+/** Same difficulty + same code → same topic and word (so two phones can race). */
+function pickWord(diff, code, topicSetting = 'mix') {
+  const rng = mulberry32(hashStr(diff + '|' + topicSetting + '|' + code));
+  const topics = WORD_BANK[topicSetting] ? [topicSetting] : Object.keys(WORD_BANK);
+  const topic = topics[Math.floor(rng() * topics.length)];
+  const list = WORD_BANK[topic][diff];
+  return { topic, word: list[Math.floor(rng() * list.length)] };
+}
+
+/* ==========================================================================
+   2. APP STATE + SETTINGS
+   ========================================================================== */
+const DEFAULTS = { mode: 'solo', difficulty: 'easy', topic: 'mix', side: 'both', code: '', demo: false };
+function loadSettings() { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('chalkWordle') || '{}') }; } catch { return { ...DEFAULTS }; } }
+function saveSettings() { try { localStorage.setItem('chalkWordle', JSON.stringify(S.settings)); } catch { /* private mode */ } }
+
+const STABLE_MS = 1700;   // a row must read the same for this long before it auto-locks
+const LOCK_FRAMES = 12;   // steady detections needed to lock onto the whiteboard
+const S = {
+  settings: loadSettings(),
+  screen: 'menu',          // menu | transition | calib | play | end | camerror
+  demo: false,
+  game: null,
+  board: { locked: false, quad: null, BH: 625, pinned: false, lastSeen: 0 },
+  layout: null, els: null, layoutDirty: true,
+  kbPlayer: 0, kbOpen: false, debug: false,
+};
+const boardRect = () => [[0, 0], [1000, 0], [1000, S.board.BH], [0, S.board.BH]];
+
+/* ==========================================================================
+   3. MENU
+   ========================================================================== */
+function initMenu() {
+  if (!S.settings.code) S.settings.code = randCode();
+  $$('.chips').forEach(group => group.addEventListener('click', e => {
+    const b = e.target.closest('.chip'); if (!b) return;
+    S.settings[group.dataset.key] = b.dataset.v; saveSettings(); renderMenu();
+  }));
+  $('#demoToggle').onclick = () => { S.settings.demo = !S.settings.demo; saveSettings(); renderMenu(); };
+  $('#codeInput').oninput = e => { const v = e.target.value.replace(/\D/g, '').slice(0, 4); e.target.value = v; S.settings.code = v; saveSettings(); };
+  $('#codeDice').onclick = () => { S.settings.code = randCode(); saveSettings(); renderMenu(); };
+  $('#helpBtn').onclick = () => { $('#help').hidden = false; };
+  $('#helpClose').onclick = () => { $('#help').hidden = true; };
+  $('#startBtn').onclick = startGame;
+  renderMenu();
+}
+function renderMenu() {
+  $$('.chips').forEach(g => { const v = S.settings[g.dataset.key]; $$('.chip', g).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.v === v))); });
+  const duo = S.settings.mode === 'duo';
+  $('#sideGroup').hidden = !duo;
+  $('#codeRow').hidden = !(duo && S.settings.side !== 'both');
+  $('#codeInput').value = S.settings.code;
+  $('#demoToggle').setAttribute('aria-pressed', String(!!S.settings.demo));
+  $('#demoNote').hidden = !S.settings.demo;
+}
+
+/* ==========================================================================
+   4. FELT ERASER TRANSITION
+   A canvas above the menu is "painted" with a clean slate texture wherever the
+   eraser's felt passes, so the chalk menu really looks wiped away.
+   ========================================================================== */
+const EraserFX = {
+  el: null, wipe: null, dust: null, L: 200, S: 76, pose: { x: 0, y: 0, r: 0 },
+  init() { this.el = $('#eraser'); this.wipe = $('#wipe'); this.dust = $('#dust'); this.rest(); },
+  size() {
+    this.L = clamp(Math.min(innerHeight * .27, innerWidth * .55), 90, 250); this.S = this.L * .38;
+    this.el.style.setProperty('--eL', this.L + 'px'); this.el.style.setProperty('--eS', this.S + 'px');
+  },
+  apply() { const p = this.pose; this.el.style.transform = `translate(${p.x - this.L / 2}px,${p.y - this.S / 2}px) rotate(${p.r}deg)`; },
+  rest() { // sit on the wooden ledge, bottom-right
+    this.size();
+    const ledgeTop = $('.ledge').getBoundingClientRect().top || innerHeight - 30;
+    this.pose = { x: innerWidth - this.L * .62 - 14, y: ledgeTop - this.S * .5 + 3, r: -2 };
+    this.apply(); this.el.hidden = false;
+  },
+  /** Plays the wipe; resolves when the board is clean. */
+  run() {
+    return new Promise(resolve => {
+      const Wd = innerWidth, Ht = innerHeight, L = this.L, Sd = this.S;
+      const wipe = this.wipe, ctx = wipe.getContext('2d');
+      wipe.width = Wd; wipe.height = Ht; wipe.style.opacity = '1'; wipe.hidden = false; ctx.clearRect(0, 0, Wd, Ht);
+      const pat = ctx.createPattern(makeCleanSlate(Wd, Ht), 'no-repeat');
+      const dust = this.dust, dctx = dust.getContext('2d'); dust.width = Wd; dust.height = Ht; dust.hidden = false;
+      if (REDUCED) { ctx.fillStyle = pat; ctx.fillRect(0, 0, Wd, Ht); this.el.hidden = true; return setTimeout(resolve, 150); }
+
+      // Zig-zag path: lift off the ledge → horizontal passes top→bottom → fly away
+      const reach = L * .9;                                   // height of one felt swath
+      const n = Math.max(2, Math.ceil((Ht - reach) / (reach * .8)) + 1);
+      const ys = [...Array(n)].map((_, i) => lerp(reach * .5, Ht - reach * .5, i / (n - 1)));
+      const xL = Sd * .35, xR = Wd - Sd * .35, dPass = clamp(260 + Wd * .32, 420, 640);
+      const mkStreaks = () => [...Array(16)].map(() => ({ o: (Math.random() - .5) * L * .9, a: .015 + Math.random() * .05, w: .6 + Math.random() * 1.8 }));
+      const segs = []; let pos = { ...this.pose };
+      const first = { x: xL, y: ys[0], r: 90 };
+      segs.push({ from: pos, to: first, dur: 420, ease: easeInOut, wipe: false }); pos = first;
+      for (let i = 0; i < n; i++) {
+        const dir = i % 2 === 0 ? 1 : -1;
+        const end = { x: dir > 0 ? xR : xL, y: ys[i] + (Math.random() - .5) * reach * .06, r: 90 + dir * 4 };
+        segs.push({ from: pos, to: end, dur: dPass, ease: easeInOut, wipe: true, streaks: mkStreaks() }); pos = end;
+        if (i < n - 1) { const nx = { x: end.x, y: ys[i + 1], r: 90 }; segs.push({ from: pos, to: nx, dur: 170, ease: t => t, wipe: true, streaks: mkStreaks() }); pos = nx; }
+      }
+      const exitDir = n % 2 ? 1 : -1;
+      segs.push({ from: pos, to: { x: pos.x + exitDir * (Wd * .5 + L), y: pos.y + Ht * .12, r: 125 }, dur: 380, ease: t => t * t, wipe: false });
+      const total = segs.reduce((a, s) => a + s.dur, 0);
+      const poseAt = t => {
+        let acc = 0;
+        for (const s of segs) {
+          if (t <= acc + s.dur) {
+            const k = s.ease(clamp((t - acc) / s.dur, 0, 1));
+            return { x: lerp(s.from.x, s.to.x, k), y: lerp(s.from.y, s.to.y, k) + (s.wipe ? Math.sin(k * Math.PI * 3) * reach * .02 : 0), r: lerp(s.from.r, s.to.r, k), seg: s };
+          }
+          acc += s.dur;
+        }
+        const s = segs[segs.length - 1]; return { ...s.to, seg: s };
+      };
+      // Paint clean slate along the felt contact between two poses (+ faint chalk streaks)
+      const wipeBetween = (a, b, streaks) => {
+        const steps = Math.max(1, Math.ceil(dist([a.x, a.y], [b.x, b.y]) / 5));
+        ctx.fillStyle = pat;
+        for (let k = 1; k <= steps; k++) {
+          const t = k / steps, x = lerp(a.x, b.x, t), y = lerp(a.y, b.y, t), r = lerp(a.r, b.r, t) * Math.PI / 180;
+          ctx.save(); ctx.translate(x, y); ctx.rotate(r); ctx.beginPath(); ctx.rect(-L * .46, -Sd * .42, L * .92, Sd * .84); ctx.restore();
+          ctx.fill();               // path was built in rotated space; pattern stays in screen space
+        }
+        const ra = a.r * Math.PI / 180, rb = b.r * Math.PI / 180;
+        for (const s of streaks) {
+          ctx.beginPath(); ctx.moveTo(a.x + Math.cos(ra) * s.o, a.y + Math.sin(ra) * s.o); ctx.lineTo(b.x + Math.cos(rb) * s.o, b.y + Math.sin(rb) * s.o);
+          ctx.strokeStyle = `rgba(244,241,234,${s.a})`; ctx.lineWidth = s.w; ctx.stroke();
+        }
+      };
+      const parts = []; let last = null; const t0 = performance.now();
+      const frame = now => {
+        const t = now - t0, p = poseAt(t);
+        if (last && p.seg.wipe) {
+          wipeBetween(last, p, p.seg.streaks);
+          // chalk dust puffs off the trailing edge
+          const mx = p.x - last.x, my = p.y - last.y, m = Math.hypot(mx, my) || 1, rr = p.r * Math.PI / 180;
+          for (let i = 0; i < 3; i++) {
+            const o = (Math.random() - .5) * L * .9;
+            parts.push({ x: p.x - mx / m * Sd * .45 + Math.cos(rr) * o, y: p.y - my / m * Sd * .45 + Math.sin(rr) * o,
+              vx: -mx / m * (.2 + Math.random()) + (Math.random() - .5) * .4, vy: (Math.random() - .7) * .6, life: 50 + Math.random() * 40, max: 90, s: .8 + Math.random() * 1.8 });
+          }
+        }
+        last = p; this.pose = { x: p.x, y: p.y, r: p.r }; this.apply();
+        dctx.clearRect(0, 0, Wd, Ht);
+        for (let i = parts.length - 1; i >= 0; i--) {
+          const q = parts[i]; q.x += q.vx; q.y += q.vy; q.vy += .03; q.life--;
+          if (q.life <= 0) { parts.splice(i, 1); continue; }
+          dctx.fillStyle = `rgba(244,241,234,${.5 * q.life / q.max})`; dctx.fillRect(q.x, q.y, q.s, q.s);
+        }
+        if (t < total || parts.length) requestAnimationFrame(frame);
+        if (t >= total && !this._done) { this._done = true; this.el.hidden = true; resolve(); }
+      };
+      this._done = false; requestAnimationFrame(frame);
+    });
+  },
+  /** Fade the clean slate away to reveal the AR view. */
+  reveal() {
+    $('#slateMsg').hidden = true;
+    this.wipe.style.opacity = '0';
+    setTimeout(() => { this.wipe.hidden = true; this.dust.hidden = true; }, 800);
+  },
+};
+/** A clean chalkboard texture (with faint leftover smudges) used by the eraser. */
+function makeCleanSlate(Wd, Ht) {
+  const c = document.createElement('canvas'); c.width = Wd; c.height = Ht; const x = c.getContext('2d');
+  x.fillStyle = '#1E2221'; x.fillRect(0, 0, Wd, Ht);
+  const img = x.getImageData(0, 0, Wd, Ht), d = img.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - .5) * 12; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  x.putImageData(img, 0, 0);
+  for (let k = 0; k < 9; k++) {
+    const cx = Math.random() * Wd, cy = Math.random() * Ht, r = 80 + Math.random() * 260;
+    const g = x.createRadialGradient(cx, cy, 0, cx, cy, r); g.addColorStop(0, 'rgba(244,241,234,.045)'); g.addColorStop(1, 'rgba(244,241,234,0)');
+    x.fillStyle = g; x.fillRect(cx - r, cy - r, r * 2, r * 2);
+  }
+  const v = x.createRadialGradient(Wd / 2, Ht / 2, Math.min(Wd, Ht) * .3, Wd / 2, Ht / 2, Math.max(Wd, Ht) * .75);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)'); x.fillStyle = v; x.fillRect(0, 0, Wd, Ht);
+  return c;
+}
+
+/* ==========================================================================
+   5. CAMERA + FRAME SOURCE
+   ========================================================================== */
+const Cam = {
+  stream: null, video: $('#video'),
+  async start() {
+    if (!window.isSecureContext) throw new Error('The camera only works on HTTPS or localhost.');
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser has no camera access.');
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    const v = this.video; v.srcObject = this.stream; v.muted = true;
+    await v.play().catch(() => {});
+    const t0 = performance.now();
+    while (!v.videoWidth && performance.now() - t0 < 5000) await sleep(50);
+    try { // continuous autofocus helps keep handwriting sharp
+      const track = this.stream.getVideoTracks()[0], caps = track.getCapabilities?.();
+      if (caps?.focusMode?.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+    } catch { /* not supported */ }
+  },
+  stop() { this.stream?.getTracks().forEach(t => t.stop()); this.stream = null; this.video.srcObject = null; },
+};
+/** The image the CV + OCR read from: the camera, or the demo whiteboard canvas. */
+function getSrc() {
+  if (S.demo) return { el: Demo.canvas, w: Demo.canvas.width, h: Demo.canvas.height };
+  const v = Cam.video; return { el: v, w: v.videoWidth, h: v.videoHeight };
+}
+/** Source pixels ↔ screen (CSS) pixels, matching object-fit: cover. */
+function cover() { const s = getSrc(), Wd = innerWidth, Ht = innerHeight, k = Math.max(Wd / s.w, Ht / s.h); return { k, dx: (Wd - s.w * k) / 2, dy: (Ht - s.h * k) / 2 }; }
+function srcToScreen(p) { const c = cover(); return [p[0] * c.k + c.dx, p[1] * c.k + c.dy]; }
+function screenToSrc(p) { const c = cover(); return [(p[0] - c.dx) / c.k, (p[1] - c.dy) / c.k]; }
+
+/* ==========================================================================
+   6. GEOMETRY — homography (a 3×3 "perspective map" between two quads)
+   ========================================================================== */
+function solveHomography(src, dst) {
+  const A = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [u, v] = dst[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  }
+  for (let c = 0; c < 8; c++) {           // Gauss-Jordan with partial pivoting
+    let p = c; for (let r = c + 1; r < 8; r++) if (Math.abs(A[r][c]) > Math.abs(A[p][c])) p = r;
+    [A[c], A[p]] = [A[p], A[c]];
+    const pv = A[c][c]; if (Math.abs(pv) < 1e-10) return null;
+    for (let r = 0; r < 8; r++) { if (r === c) continue; const f = A[r][c] / pv; if (!f) continue; for (let k = c; k < 9; k++) A[r][k] -= f * A[c][k]; }
+  }
+  const h = A.map((row, i) => row[8] / row[i]); h.push(1); return h;
+}
+function applyH(H, x, y) { const w = H[6] * x + H[7] * y + H[8]; return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w]; }
+const toMatrix3d = H => `matrix3d(${H[0]},${H[3]},0,${H[6]},${H[1]},${H[4]},0,${H[7]},0,0,1,0,${H[2]},${H[5]},0,${H[8]})`;
+const polyArea = q => { let a = 0; for (let i = 0; i < q.length; i++) { const p = q[i], n = q[(i + 1) % q.length]; a += p[0] * n[1] - n[0] * p[1]; } return Math.abs(a) / 2; };
+const quadDist = (a, b) => Math.max(...a.map((p, i) => dist(p, b[i])));
+const lerpQuad = (a, b, t) => a.map((p, i) => [lerp(p[0], b[i][0], t), lerp(p[1], b[i][1], t)]);
+function isConvex(q) { let sign = 0; for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4]; const cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]); if (Math.abs(cr) < 1e-6) continue; const s = Math.sign(cr); if (sign && s !== sign) return false; sign = s; } return true; }
+
+/* ==========================================================================
+   7. WHITEBOARD DETECTOR (no OpenCV needed — runs on a 200 px wide copy)
+   1) "whiteness" = brightness minus colourfulness → Otsu threshold (auto split)
+   2) strong edges (e.g. the aluminium frame) act as walls between regions
+   3) biggest rectangular bright blob wins → its 4 extreme corners = the board
+   ========================================================================== */
+function otsu(hist, total) {
+  let sum = 0; for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, max = 0, th = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue; const wF = total - wB; if (!wF) break;
+    sumB += t * hist[t]; const mB = sumB / wB, mF = (sum - sumB) / wF, between = wB * wF * (mB - mF) ** 2;
+    if (between > max) { max = between; th = t; }
+  }
+  return th;
+}
+const Detector = {
+  W: 200, c: document.createElement('canvas'), ctx: null,
+  detect(el, sw, sh) {
+    const Wd = this.W, Ht = Math.max(30, Math.round(Wd * sh / sw)), N = Wd * Ht;
+    if (this.c.width !== Wd || this.c.height !== Ht) { this.c.width = Wd; this.c.height = Ht; this.ctx = null; }
+    const ctx = this.ctx || (this.ctx = this.c.getContext('2d', { willReadFrequently: true }));
+    try { ctx.drawImage(el, 0, 0, Wd, Ht); } catch { return null; }
+    const d = ctx.getImageData(0, 0, Wd, Ht).data;
+    const L = new Float32Array(N), wt = new Uint8Array(N), hist = new Uint32Array(256);
+    for (let i = 0, p = 0; i < N; i++, p += 4) {
+      const r = d[p], g = d[p + 1], b = d[p + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      const l = .299 * r + .587 * g + .114 * b; L[i] = l;
+      const w = clamp(l - 1.3 * (mx - mn), 0, 255) | 0; wt[i] = w; hist[w]++;
+    }
+    const T = Math.max(otsu(hist, N), 105);
+    const mag = new Float32Array(N); let msum = 0;
+    for (let y = 1; y < Ht - 1; y++) for (let x = 1; x < Wd - 1; x++) {     // Sobel edge strength
+      const i = y * Wd + x;
+      const gx = (L[i - Wd + 1] + 2 * L[i + 1] + L[i + Wd + 1]) - (L[i - Wd - 1] + 2 * L[i - 1] + L[i + Wd - 1]);
+      const gy = (L[i + Wd - 1] + 2 * L[i + Wd] + L[i + Wd + 1]) - (L[i - Wd - 1] + 2 * L[i - Wd] + L[i - Wd + 1]);
+      const m = Math.abs(gx) + Math.abs(gy); mag[i] = m; msum += m;
+    }
+    const eT = Math.max(70, msum / N * 2.5);
+    const mask = new Uint8Array(N); for (let i = 0; i < N; i++) mask[i] = wt[i] > T && mag[i] < eT ? 1 : 0;
+    const lab = new Int32Array(N), stack = new Int32Array(N); let id = 0, best = null;
+    for (let s = 0; s < N; s++) {
+      if (!mask[s] || lab[s]) continue;
+      id++; let sp = 0; stack[sp++] = s; lab[s] = id;
+      let cnt = 0, tlv = 1e9, tl = 0, brv = -1e9, br = 0, trv = -1e9, tr = 0, blv = -1e9, bl = 0, minx = Wd, maxx = 0, miny = Ht, maxy = 0;
+      while (sp) {
+        const k = stack[--sp], x = k % Wd, y = (k / Wd) | 0; cnt++;
+        const sP = x + y, dP = x - y;
+        if (sP < tlv) { tlv = sP; tl = k; } if (sP > brv) { brv = sP; br = k; }
+        if (dP > trv) { trv = dP; tr = k; } if (-dP > blv) { blv = -dP; bl = k; }
+        if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y;
+        if (x > 0 && mask[k - 1] && !lab[k - 1]) { lab[k - 1] = id; stack[sp++] = k - 1; }
+        if (x < Wd - 1 && mask[k + 1] && !lab[k + 1]) { lab[k + 1] = id; stack[sp++] = k + 1; }
+        if (y > 0 && mask[k - Wd] && !lab[k - Wd]) { lab[k - Wd] = id; stack[sp++] = k - Wd; }
+        if (y < Ht - 1 && mask[k + Wd] && !lab[k + Wd]) { lab[k + Wd] = id; stack[sp++] = k + Wd; }
+      }
+      if (cnt < N * .04) continue;
+      const pts = [tl, tr, br, bl].map(k => [k % Wd, (k / Wd) | 0]);
+      const area = polyArea(pts); if (area < N * .05) continue;
+      const fill = cnt / area; if (fill < .72 || fill > 1.25) continue;             // must be rectangle-ish
+      if (Math.min(...pts.map((p, i) => dist(p, pts[(i + 1) % 4]))) < Wd * .1) continue;
+      if (!isConvex(pts)) continue;
+      const touch = (minx <= 0) + (maxx >= Wd - 1) + (miny <= 0) + (maxy >= Ht - 1);
+      const score = cnt * fill * (touch >= 2 ? .35 : touch === 1 ? .75 : 1);
+      if (!best || score > best.score) best = { score, pts };
+    }
+    if (!best) return null;
+    // push corners ~1.5 px outward (the edge barrier eats a little of the border)
+    const cx = best.pts.reduce((a, p) => a + p[0], 0) / 4, cy = best.pts.reduce((a, p) => a + p[1], 0) / 4;
+    const sx = sw / Wd, sy = sh / Ht;
+    return best.pts.map(([x, y]) => { const dd = Math.hypot(x - cx, y - cy) || 1, f = 1 + 1.5 / dd; return [(cx + (x - cx) * f + .5) * sx, (cy + (y - cy) * f + .5) * sy]; });
+  },
+};
+const Tracker = { cand: null, stable: 0, miss: 0, jump: 0, reset() { this.cand = null; this.stable = 0; this.miss = 0; this.jump = 0; } };
+
+/* ==========================================================================
+   8. GAME MODEL — rows, scoring, win/lose
+   ========================================================================== */
+function newSlot(armed = true) { return { ocr: null, prev: undefined, since: 0, manual: null, sig: null, sigLetter: null, armed }; }
+const slotValue = s => s.manual || (s.ocr && s.ocr !== '?' ? s.ocr : null);
+function newGame(again) {
+  const st = S.settings, duo = st.mode === 'duo';
+  let code;
+  if (duo && st.side !== 'both') {
+    if (again) st.code = String((parseInt(st.code || '0', 10) + 1) % 10000).padStart(4, '0');
+    if (!st.code) st.code = randCode();
+    code = st.code; saveSettings();
+  } else code = String(Math.random());
+  const { word, topic } = pickWord(st.difficulty, code, st.topic);
+  const requireClear = again && !S.demo;   // old marker writing is still on the real board
+  const players = [];
+  for (let i = 0; i < (duo ? 2 : 1); i++) {
+    players.push({
+      id: i, name: `PLAYER ${i + 1}`,
+      active: !duo || st.side === 'both' || (st.side === 'p1' ? i === 0 : i === 1),
+      rowIdx: 0, done: false, won: false, lockProgress: 0, shownRows: -1, keys: {},
+      rows: Array.from({ length: 6 }, () => ({ result: null, letters: null, slots: Array.from({ length: word.length }, () => newSlot(!requireClear)) })),
+    });
+  }
+  S.game = { word, topic, len: word.length, players, over: false, winner: null, code, duo };
+  S.kbPlayer = players.findIndex(p => p.active);
+  S.layoutDirty = true;
+}
+function scoreGuess(guess, word) {           // classic two-pass Wordle scoring (handles repeated letters)
+  const res = Array(word.length).fill('x'), left = {};
+  for (let i = 0; i < word.length; i++) { if (guess[i] === word[i]) res[i] = 'g'; else left[word[i]] = (left[word[i]] || 0) + 1; }
+  for (let i = 0; i < word.length; i++) if (res[i] !== 'g' && left[guess[i]] > 0) { res[i] = 'y'; left[guess[i]]--; }
+  return res;
+}
+const duoBoth = () => S.game && S.game.players.length === 2 && S.game.players.every(p => p.active);
+function tryLock(pi, auto) {
+  const g = S.game; if (!g || g.over || S.screen !== 'play') return false;
+  const p = g.players[pi]; if (!p || !p.active || p.done) return false;
+  const row = p.rows[p.rowIdx], letters = row.slots.map(slotValue);
+  if (letters.some(l => !l)) {
+    if (!auto) { toast(`${duoBoth() ? p.name + ': ' : ''}write or type all ${g.len} letters first`); shakeRow(pi); }
+    return false;
+  }
+  // you typed a fix over a misread letter → keep that handwriting sample for next time
+  let learned = false;
+  row.slots.forEach(s => { if (s.manual && s.lastFeat) { Hands.add(pi, s.manual, s.lastFeat); learned = true; } });
+  if (learned) Hands.save(pi);
+  const res = scoreGuess(letters.join(''), g.word);
+  row.letters = letters; row.result = res; p.lockProgress = 0;
+  const rank = { x: 1, y: 2, g: 3 };   // keyboard keeps the best colour seen for each letter
+  letters.forEach((l, i) => { const prev = p.keys[l]; if (!prev || rank[res[i]] > rank[prev]) p.keys[l] = res[i]; });
+  revealRow(pi, p.rowIdx);
+  const won = res.every(r => r === 'g');
+  if (won) { p.won = p.done = true; g.over = true; g.winner = pi; setTimeout(endGame, g.len * 150 + 650); }
+  else if (p.rowIdx === 5) {
+    p.done = true;
+    if (g.players.every(q => !q.active || q.done)) { g.over = true; setTimeout(endGame, g.len * 150 + 650); }
+    else toast(`${p.name} is out of guesses`);
+  } else {
+    p.rowIdx++;
+    if (!auto) toast('Locked! Next row is ready');
+  }
+  if (S.kbPlayer === pi && p.done && duoBoth()) { const o = g.players.find(q => q.active && !q.done); if (o) S.kbPlayer = o.id; }
+  refreshBoard(); renderKeyboard(); updateHud();
+  return true;
+}
+function endGame() {
+  const g = S.game; if (S.screen !== 'play') return;
+  S.screen = 'end'; stopOcrLoop(); updateHud();
+  const won = g.winner != null, p = won ? g.players[g.winner] : null;
+  const tries = p ? p.rowIdx + 1 : 0;
+  const title = won ? (g.duo ? `${p.name} WINS!` : 'SOLVED IT!') : 'OUT OF CHALK!';
+  const sub = won ? `${tries === 1 ? 'First try!' : `Got it in ${tries} tries`} · Topic: ${g.topic}` : `The word was ${g.word}`;
+  const note = (S.demo ? '' : 'Wipe the whiteboard clean before the next round. ') + (g.duo && S.settings.side !== 'both' ? `Next round uses game code ${String((parseInt(g.code, 10) + 1) % 10000).padStart(4, '0')}.` : '');
+  showBanner({ title, sub, note, word: g.word, won, modal: true, buttons: [
+    { label: 'Play Again', primary: true, on: playAgain },
+    { label: 'Menu', on: backToMenu },
+  ] });
+  if (won) FX.celebrate();
+}
+function playAgain() {
+  hideBanner(); newGame(true);
+  if (S.demo) Demo.strokes = Demo.strokes.filter(t => t.tag?.strip);   // the A–Z strip stays on the board
+  buildBoard(); S.screen = 'play'; startOcrLoop(); renderKeyboard(); updateHud();
+  if (!S.demo) toast('New word! Erase the old guesses first');
+}
+
+/* ==========================================================================
+   9. PROJECTED BOARD — layout in "board units" (1000 × BH), warped by matrix3d
+   ========================================================================== */
+function computeLayout(BW, BH, g) {
+  const duo = g.players.length === 2, n = g.len, pad = BW * .035;
+  const headerH = clamp(BH * .12, 46, 120);
+  const header = { x: pad, y: pad * .7, w: BW - 2 * pad, h: headerH };
+  const bodyTop = header.y + headerH + BH * .03, bottom = BH - pad * .6;
+  // --- A–Z handwriting strips on the outer side(s): 3 columns × 9 rows of small boxes
+  const cols = 3, nrows = 9, cellH0 = (bottom - bodyTop) / nrows;
+  const cw = Math.min(cellH0 * .82 * .8, BW * (duo ? .14 : .2) / (cols + (cols - 1) * .25)), ch = cw / .8, cg = cw * .25;
+  const sw = cols * cw + (cols - 1) * cg;
+  const strips = (duo ? ['left', 'right'] : ['right']).map((side, k) => {
+    const x = side === 'left' ? pad : BW - pad - sw;
+    return { pi: duo ? k : 0, side, x, w: sw, cells: [...AZ].map((L, i) => ({ L, x: x + (i % cols) * (cw + cg), y: bodyTop + Math.floor(i / cols) * cellH0 + (cellH0 - ch) / 2, w: cw, h: ch })) };
+  });
+  // --- guess rows in the remaining middle area
+  const gx0 = duo ? pad + sw + BW * .025 : pad, gx1 = BW - pad - sw - BW * (duo ? .025 : .03);
+  const labelH = duo ? clamp(BH * .055, 22, 60) : 0;
+  const top = bodyTop + labelH, rowH = (bottom - top) / 6;
+  const gutter = BW * .012, zw = duo ? (gx1 - gx0 - gutter * 3) / 2 : gx1 - gx0;
+  const zxs = duo ? [gx0, gx0 + zw + gutter * 3] : [gx0];
+  const zones = zxs.map(zx => {
+    const numW = Math.min(rowH * .5, zw * .08), avail = zw - numW;
+    const s = Math.min(rowH * .7, avail * .95 / (n * .78 + (n - 1) * .2));
+    const sw2 = s * .78, gap = s * .2, rw = n * sw2 + (n - 1) * gap, x0 = zx + numW + (avail - rw) / 2;
+    const rows = [...Array(6)].map((_, r) => {
+      const y = top + r * rowH + (rowH - s) * .42;
+      return { y, s, x0, w: rw, numW, slots: [...Array(n)].map((_, i) => ({ x: x0 + i * (sw2 + gap), y, w: sw2, h: s })) };
+    });
+    return { x: zx, w: zw, label: duo ? { x: zx, y: top - labelH - BH * .005, w: zw, h: labelH } : null, rows };
+  });
+  return { BW, BH, header, zones, strips, divider: duo ? { x: gx0 + zw + gutter * 1.5, y1: bodyTop - BH * .01, y2: bottom } : null };
+}
+function buildBoard() {
+  const g = S.game; if (!g) return;
+  const L = computeLayout(1000, S.board.BH, g); S.layout = L; S.layoutDirty = false;
+  const el = $('#board'); el.style.width = L.BW + 'px'; el.style.height = L.BH + 'px';
+  let h = `<div class="b-tint"></div><div class="b-outline"></div>`;
+  const hd = L.header;
+  h += `<div class="b-header" id="bHeader" style="left:${hd.x}px;top:${hd.y}px;width:${hd.w}px;height:${hd.h}px;font-size:${hd.h * .6}px;--hh:${hd.h}px"><span></span></div>`;
+  L.strips.forEach(st => {
+    h += `<div class="astrip${g.players[st.pi].active ? '' : ' off'}" data-p="${st.pi}">`;
+    st.cells.forEach(c => { h += `<div class="acell" data-l="${c.L}" style="left:${c.x}px;top:${c.y}px;width:${c.w}px;height:${c.h}px;--s:${c.h}px;--lw:${Math.max(1.5, c.h * .03)}px"><em class="alab">${c.L}</em></div>`; });
+    h += `</div>`;
+  });
+  if (L.divider) h += `<div class="b-divider" style="left:${L.divider.x}px;top:${L.divider.y1}px;height:${L.divider.y2 - L.divider.y1}px"></div>`;
+  L.zones.forEach((z, pi) => {
+    const p = g.players[pi];
+    h += `<div class="zone${p.active ? '' : ' off'}" data-p="${pi}">`;
+    if (z.label) h += `<div class="zlabel" style="left:${z.label.x}px;top:${z.label.y}px;width:${z.label.w}px;height:${z.label.h}px;font-size:${z.label.h * .62}px">${p.name}${p.active ? '' : ' · OTHER PHONE'}</div>`;
+    z.rows.forEach((row, r) => {
+      const s = row.s, bw = Math.max(3, s * .06), lw = Math.max(1.5, s * .022);
+      h += `<div class="brow hidden" data-r="${r}" style="--s:${s}px;--bw:${bw}px;--lw:${lw}px">`;
+      h += `<div class="rnum" style="left:${row.x0 - row.numW}px;top:${row.y}px;width:${row.numW * .7}px;font-size:${s * .3}px;line-height:${s}px">${r + 1}</div>`;
+      row.slots.forEach((b, i) => { h += `<div class="slot" style="left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;--d:${i * .05}s"><i class="mid"></i><b class="big"></b><em class="cap"></em></div>`; });
+      h += `<div class="lockbar" style="left:${row.x0 - s * .03}px;top:${row.y + s - bw * .65}px;width:${row.w + s * .06}px"><b></b></div></div>`;
+    });
+    h += `</div>`;
+  });
+  el.innerHTML = h;
+  S.els = L.zones.map((z, pi) => z.rows.map((_, r) => {
+    const rowEl = el.querySelector(`.zone[data-p="${pi}"] .brow[data-r="${r}"]`);
+    return { row: rowEl, slots: $$('.slot', rowEl), bar: $('.lockbar b', rowEl) };
+  }));
+  S.stripEls = L.strips.map(st => { const el2 = el.querySelector(`.astrip[data-p="${st.pi}"]`); return { pi: st.pi, cells: Object.fromEntries($$('.acell', el2).map(e => [e.dataset.l, e])) }; });
+  g.players.forEach(p => { p.shownRows = -1; p.rows.forEach(r => { r.revealing = false; }); });
+  refreshBoard();
+}
+/** Sync the board DOM with game state (called after OCR cycles / key presses). */
+function refreshBoard() {
+  const g = S.game; if (!g || !S.els) return;
+  const learning = S.screen === 'learn', board = $('#board');
+  board.classList.toggle('learning', learning);
+  const head = $('#bHeader'), htxt = learning ? 'WRITE A–Z IN THE SIDE BOXES' : `TOPIC: ${g.topic.toUpperCase()}`;
+  if (head && head.firstChild.textContent !== htxt) { head.firstChild.textContent = htxt; head.classList.toggle('long', learning); }
+  (S.stripEls || []).forEach(st => {
+    const hand = Hands.get(st.pi), ls = S.learn?.[st.pi] || {};
+    for (const L of AZ) {
+      const e = st.cells[L], status = ls[L]?.status;
+      e.classList.toggle('ok', status === 'ok'); e.classList.toggle('wip', status === 'wip');
+      e.classList.toggle('saved', status !== 'ok' && status !== 'wip' && !!hand[L]?.length);
+    }
+  });
+  g.players.forEach((p, pi) => {
+    for (let r = 0; r < 6; r++) {
+      const e = S.els[pi][r], row = p.rows[r];
+      const visible = p.active ? r <= p.rowIdx : r === 0;
+      e.row.classList.toggle('hidden', !visible);
+      if (visible && p.shownRows < r) { e.row.classList.remove('appear'); void e.row.offsetWidth; e.row.classList.add('appear'); p.shownRows = r; }
+      const live = p.active && !p.done && !g.over && r === p.rowIdx;
+      e.row.classList.toggle('live', live);
+      row.slots.forEach((s, i) => {
+        const el = e.slots[i];
+        if (row.result) {   // restore already-scored tiles instantly (e.g. after re-scan)
+          if (!el.classList.contains('res') && !row.revealing) { el.classList.add('res', 'instant', row.result[i]); $('.big', el).textContent = row.letters[i]; }
+          return;
+        }
+        const v = slotValue(s), txt = v || (s.ocr === '?' ? '?' : ''), cap = $('.cap', el);
+        if (cap.textContent !== txt) cap.textContent = txt;
+        el.classList.toggle('has', !!txt); el.classList.toggle('manual', !!s.manual); el.classList.toggle('unk', !v && s.ocr === '?');
+      });
+      e.bar.style.width = live ? (p.lockProgress || 0) * 100 + '%' : '0%';
+    }
+  });
+}
+function revealRow(pi, r) {
+  const row = S.game.players[pi].rows[r], e = S.els?.[pi]?.[r]; if (!e) return;
+  row.revealing = true;
+  e.slots.forEach((el, i) => {
+    el.style.setProperty('--fd', i * .15 + 's');
+    el.classList.remove('has', 'manual', 'unk', 'instant');
+    el.classList.add('res', row.result[i]); $('.big', el).textContent = row.letters[i];
+  });
+  setTimeout(() => { row.revealing = false; }, e.slots.length * 150 + 600);
+}
+function shakeRow(pi) { const p = S.game.players[pi], e = S.els?.[pi]?.[p.rowIdx]; if (!e) return; e.row.classList.remove('shake'); void e.row.offsetWidth; e.row.classList.add('shake'); }
+/** Warp the board DOM onto the detected whiteboard corners. */
+let lastMatrix = '';
+function placeBoard() {
+  const H = solveHomography(boardRect(), S.board.quad.map(srcToScreen)); if (!H) return;
+  const m = toMatrix3d(H); if (m !== lastMatrix) { $('#board').style.transform = m; lastMatrix = m; }
+}
+
+/* ==========================================================================
+   10. CALIBRATION FLOW
+   ========================================================================== */
+const calib = { c: $('#calibCanvas'), ctx: null, dpr: 1 };
+function sizeCalib() { calib.dpr = Math.min(2, devicePixelRatio || 1); calib.c.width = innerWidth * calib.dpr; calib.c.height = innerHeight * calib.dpr; calib.ctx = calib.c.getContext('2d'); }
+function enterCalibration() {
+  S.screen = 'calib'; S.board.locked = false; Tracker.reset(); stopOcrLoop();
+  $('#boardLayer').hidden = true; $('#calibUI').hidden = false; $('#useFrameBtn').hidden = true;
+  clearTimeout(S.frameBtnT); S.frameBtnT = setTimeout(() => { if (S.screen === 'calib') $('#useFrameBtn').hidden = false; }, 6000);
+  updateHud();
+}
+function onDetect(q, now, src) {
+  const diag = Math.hypot(src.w, src.h);
+  if (S.screen === 'calib') {
+    if (q) {
+      if (Tracker.cand && quadDist(q, Tracker.cand) / diag < .035) Tracker.stable++; else Tracker.stable = Math.max(0, Tracker.stable - 3);
+      Tracker.cand = Tracker.cand ? lerpQuad(Tracker.cand, q, .5) : q; Tracker.miss = 0;
+    } else { Tracker.stable = Math.max(0, Tracker.stable - 2); if (++Tracker.miss > 6) Tracker.cand = null; }
+    if (Tracker.stable >= LOCK_FRAMES && Tracker.cand) lockBoard(S.demo ? Demo.quad : Tracker.cand);
+    return;
+  }
+  // Live tracking: follow small phone movements, ignore people walking in front of the board
+  if (!q) return;
+  const cur = S.board.quad, d = quadDist(q, cur) / diag, ar = polyArea(q) / polyArea(cur);
+  if (ar < .8 || ar > 1.25) { Tracker.jump = 0; return; }
+  S.board.lastSeen = now;
+  if (d < .1) { S.board.quad = lerpQuad(cur, q, d < .008 ? .1 : .3); Tracker.jump = 0; }
+  else if (++Tracker.jump > 12) { S.board.quad = q; Tracker.jump = 0; }
+}
+function drawCalib(now) {
+  const ctx = calib.ctx, d = calib.dpr; if (!ctx) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, calib.c.width, calib.c.height); ctx.setTransform(d, 0, 0, d, 0, 0);
+  if (Tracker.cand) {
+    const sq = Tracker.cand.map(srcToScreen);
+    ctx.beginPath(); sq.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath();
+    ctx.fillStyle = 'rgba(30,34,33,.18)'; ctx.fill();
+    ctx.lineWidth = 8; ctx.strokeStyle = 'rgba(30,34,33,.75)'; ctx.stroke();
+    ctx.setLineDash([12, 9]); ctx.lineDashOffset = -now / 25; ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(244,241,234,.95)';
+    ctx.shadowColor = 'rgba(244,241,234,.7)'; ctx.shadowBlur = 8; ctx.stroke(); ctx.shadowBlur = 0; ctx.setLineDash([]);
+    sq.forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], 7, 0, Math.PI * 2); ctx.fillStyle = '#F4F1EA'; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#1E2221'; ctx.stroke(); });
+  }
+  const k = Math.min(1, Tracker.stable / LOCK_FRAMES);
+  $('#calibBar').style.width = k * 100 + '%';
+  const txt = Tracker.cand ? 'Found a board — hold steady…' : 'Point your camera at the classroom whiteboard…';
+  if ($('#calibText').textContent !== txt) $('#calibText').textContent = txt;
+}
+function clearCalib() { const ctx = calib.ctx; if (ctx) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, calib.c.width, calib.c.height); } }
+function lockBoard(quad) {
+  S.board.quad = quad.map(p => [...p]); S.board.locked = true; S.board.lastSeen = performance.now(); Tracker.jump = 0;
+  const sq = S.board.quad.map(srcToScreen);
+  const aspect = clamp(((dist(sq[0], sq[1]) + dist(sq[3], sq[2])) / 2) / ((dist(sq[0], sq[3]) + dist(sq[1], sq[2])) / 2), .9, 3.2);
+  const BH = Math.round(1000 / aspect);
+  if (S.layoutDirty || !S.layout || Math.abs(BH - S.board.BH) / S.board.BH > .06) { S.board.BH = BH; buildBoard(); }
+  lastMatrix = ''; placeBoard();
+  $('#calibUI').hidden = true; clearCalib(); clearTimeout(S.frameBtnT);
+  $('#boardLayer').hidden = false;
+  if (S.game.over) { S.screen = 'end'; updateHud(); return; }
+  if (!S.learnDone) {
+    const saved = S.game.players.filter(p => p.active).every(p => Hands.count(p.id) >= 20);
+    showBanner({ title: 'Whiteboard Detected!', sub: saved ? 'Your saved handwriting is loaded. Rewrite any letter on the side, or tap Start.' : 'First, write A–Z in the small boxes on the side so I learn your handwriting.', timeout: 3600 });
+    enterLearn(); return;
+  }
+  S.screen = 'play';
+  showBanner({ title: 'Whiteboard Detected!', sub: 'Write your guesses inside the projected lines.', timeout: 2800 });
+  startOcrLoop(); updateHud();
+}
+function useScanFrame() {
+  const r = $('#scanFrame').getBoundingClientRect();
+  lockBoard([[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]].map(screenToSrc));
+}
+
+/* ==========================================================================
+   11. HANDWRITING OCR — crop → grayscale → adaptive threshold → Tesseract.js
+   ========================================================================== */
+const TESS = Object.assign({ url: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js', opts: {} }, window.TESS_CONFIG || {});
+const AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (window.Tesseract) return res();
+    const s = document.createElement('script'); s.src = src; s.async = true;
+    s.onload = res; s.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(s);
+  });
+}
+const OCR = {
+  ready: false, loading: false, failed: false, scheduler: null,
+  async init() {
+    if (this.ready || this.loading) return; this.loading = true; this.failed = false;
+    try {
+      await loadScript(TESS.url);
+      const sch = Tesseract.createScheduler(), nW = (navigator.hardwareConcurrency || 2) >= 6 ? 2 : 1;
+      for (let i = 0; i < nW; i++) {
+        const w = await Tesseract.createWorker('eng', 1, TESS.opts);
+        await w.setParameters({ tessedit_char_whitelist: AZ, tessedit_pageseg_mode: '10' /* single character */ });
+        sch.addWorker(w);
+      }
+      this.scheduler = sch; this.ready = true;
+    } catch (e) { console.warn('OCR unavailable:', e); this.failed = true; }
+    finally { this.loading = false; updateHud(); }
+  },
+  /** Returns 'A'–'Z', or '?' when something is written but unreadable. */
+  async read(canvas) {
+    const { data } = await this.scheduler.addJob('recognize', canvas);
+    const t = (data.text || '').toUpperCase().replace(/[^A-Z]/g, '');
+    return !t || data.confidence < 30 ? '?' : t[0];
+  },
+};
+/**
+ * Pre-processing for one letter slot (the "hidden canvas pipeline"):
+ *  - perspective-correct crop of the slot from the camera frame (via homography)
+ *  - grayscale, then adaptive threshold: a pixel is "ink" when it is clearly darker
+ *    than its neighbourhood AND than the bright whiteboard background
+ *  - drop specks and blobs that don't touch the middle of the slot
+ *  - centre the strokes on a white square → clean black-on-white character for Tesseract
+ */
+function preprocessSlot(gray, gw, gh, ox, oy, H, box) {
+  const ex = box.w * .12, et = box.h * .16, eb = box.h * .08;
+  const bx = box.x - ex, by = box.y - et, bw = box.w + 2 * ex, bh = box.h + et + eb;
+  const OW = 72, OH = Math.max(24, Math.round(OW * bh / bw)), N = OW * OH, g = new Float32Array(N);
+  const [h0, h1, h2, h3, h4, h5, h6, h7, h8] = H;
+  for (let j = 0; j < OH; j++) for (let i = 0; i < OW; i++) {          // 2×2 supersampled warp
+    let acc = 0;
+    for (let sj = 0; sj < 2; sj++) {
+      const v = by + (j + .25 + sj * .5) * bh / OH;
+      for (let si = 0; si < 2; si++) {
+        const u = bx + (i + .25 + si * .5) * bw / OW, w = h6 * u + h7 * v + h8;
+        let x = ((h0 * u + h1 * v + h2) / w - ox) | 0, y = ((h3 * u + h4 * v + h5) / w - oy) | 0;
+        x = x < 0 ? 0 : x >= gw ? gw - 1 : x; y = y < 0 ? 0 : y >= gh ? gh - 1 : y;
+        acc += gray[y * gw + x];
+      }
+    }
+    g[j * OW + i] = acc * .25;
+  }
+  const hist = new Uint32Array(256); for (let i = 0; i < N; i++) hist[g[i] | 0]++;
+  const pct = q => { const t = q * N; let a = 0; for (let v = 0; v < 256; v++) { a += hist[v]; if (a >= t) return v; } return 255; };
+  const bgv = pct(.85), dk = pct(.03), contrast = bgv - dk;
+  if (contrast < 38) return { empty: true };
+  const IW = OW + 1, ii = new Float64Array(IW * (OH + 1));                // integral image → fast local mean
+  for (let y = 0; y < OH; y++) { let row = 0; for (let x = 0; x < OW; x++) { row += g[y * OW + x]; ii[(y + 1) * IW + x + 1] = ii[y * IW + x + 1] + row; } }
+  const R = Math.max(4, Math.round(OW / 4)), C = Math.max(10, contrast * .2), softT = bgv - contrast * .35, hardT = bgv - contrast * .55;
+  const ink = new Uint8Array(N);
+  for (let y = 0; y < OH; y++) {
+    const y0 = Math.max(0, y - R), y1 = Math.min(OH, y + R + 1);
+    for (let x = 0; x < OW; x++) {
+      const x0 = Math.max(0, x - R), x1 = Math.min(OW, x + R + 1);
+      const mean = (ii[y1 * IW + x1] - ii[y0 * IW + x1] - ii[y1 * IW + x0] + ii[y0 * IW + x0]) / ((y1 - y0) * (x1 - x0));
+      const v = g[y * OW + x];
+      if (v < hardT || (v < mean - C && v < softT)) ink[y * OW + x] = 1;
+    }
+  }
+  // connected components (8-neighbour); keep real strokes that pass through the slot's core
+  const cx0 = Math.round((ex + box.w * .18) / bw * OW), cx1 = Math.round((ex + box.w * .82) / bw * OW);
+  const cy0 = Math.round((et + box.h * .15) / bh * OH), cy1 = Math.round((et + box.h * .9) / bh * OH);
+  const lab = new Int32Array(N), stack = new Int32Array(N), keep = new Uint8Array(N + 1);
+  let nl = 0, total = 0, bx0 = OW, by0 = OH, bx1 = -1, by1 = -1;
+  for (let s = 0; s < N; s++) {
+    if (!ink[s] || lab[s]) continue;
+    nl++; let sp = 0; stack[sp++] = s; lab[s] = nl;
+    let cnt = 0, mnx = OW, mny = OH, mxx = 0, mxy = 0, core = false;
+    while (sp) {
+      const k = stack[--sp], x = k % OW, y = (k / OW) | 0; cnt++;
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x; if (y < mny) mny = y; if (y > mxy) mxy = y;
+      if (x >= cx0 && x <= cx1 && y >= cy0 && y <= cy1) core = true;
+      for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= OH) continue;
+        for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx < 0 || xx >= OW) continue; const kk = yy * OW + xx; if (ink[kk] && !lab[kk]) { lab[kk] = nl; stack[sp++] = kk; } } }
+    }
+    if (cnt < N * .004 || !core) continue;
+    keep[nl] = 1; total += cnt;
+    if (mnx < bx0) bx0 = mnx; if (mny < by0) by0 = mny; if (mxx > bx1) bx1 = mxx; if (mxy > by1) by1 = mxy;
+  }
+  if (total < N * .012) return { empty: true };
+  // 8×8 ink "signature" — if it hasn't changed, reuse the last OCR answer (saves a lot of CPU)
+  const sig = new Float32Array(64);
+  for (let i = 0; i < N; i++) if (keep[lab[i]]) sig[(((i / OW) | 0) * 8 / OH | 0) * 8 + ((i % OW) * 8 / OW | 0)] += 1 / total;
+  // clean character image: black strokes centred on white, with padding
+  const cw = bx1 - bx0 + 1, ch = by1 - by0 + 1, tmp = document.createElement('canvas'); tmp.width = cw; tmp.height = ch;
+  const tctx = tmp.getContext('2d'), id = tctx.createImageData(cw, ch);
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+    const on = keep[lab[(by0 + y) * OW + bx0 + x]], p = (y * cw + x) * 4, v = on ? 0 : 255;
+    id.data[p] = id.data[p + 1] = id.data[p + 2] = v; id.data[p + 3] = 255;
+  }
+  tctx.putImageData(id, 0, 0);
+  const mask = new Uint8Array(cw * ch); for (let i = 0; i < mask.length; i++) mask[i] = id.data[i * 4] ? 0 : 1;
+  const TH = 56, PAD = 22, sc = Math.min(TH / ch, TH * 1.15 / cw), dw = Math.max(4, Math.round(cw * sc)), dh = Math.max(4, Math.round(ch * sc));
+  const out = document.createElement('canvas'); out.width = dw + PAD * 2; out.height = dh + PAD * 2;
+  const o = out.getContext('2d'); o.fillStyle = '#fff'; o.fillRect(0, 0, out.width, out.height); o.imageSmoothingEnabled = true; o.drawImage(tmp, PAD, PAD, dw, dh);
+  return { empty: false, sig, canvas: out, mask, cw, ch };
+}
+/* --------------------------------------------------------------------------
+   PERSONAL HANDWRITING READER
+   Each letter you write in the A–Z strip becomes a template. A new letter is
+   compared to every template by "shape distance": both are shrunk to 40×40,
+   thinned to 1-px skeletons (so marker thickness doesn't matter) and we measure
+   how far each skeleton's pixels are from the other's (chamfer distance).
+   Closest template wins. Tesseract is only asked when it's a close call.
+   -------------------------------------------------------------------------- */
+const FN = 40, H_ACCEPT = 3.0, H_MARGIN = .5, H_REJECT = 4.8;
+function thin(src) {                       // Zhang–Suen thinning
+  const im = Uint8Array.from(src), w = FN, h = FN, del = []; let changed = true;
+  while (changed) {
+    changed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      del.length = 0;
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x; if (!im[i]) continue;
+        const p2 = im[i - w], p3 = im[i - w + 1], p4 = im[i + 1], p5 = im[i + w + 1], p6 = im[i + w], p7 = im[i + w - 1], p8 = im[i - 1], p9 = im[i - w - 1];
+        const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9; if (B < 2 || B > 6) continue;
+        const A = (!p2 && p3) + (!p3 && p4) + (!p4 && p5) + (!p5 && p6) + (!p6 && p7) + (!p7 && p8) + (!p8 && p9) + (!p9 && p2); if (A !== 1) continue;
+        if (pass === 0 ? (p2 * p4 * p6 || p4 * p6 * p8) : (p2 * p4 * p8 || p2 * p6 * p8)) continue;
+        del.push(i);
+      }
+      if (del.length) { changed = true; for (const i of del) im[i] = 0; }
+    }
+  }
+  return im;
+}
+function distT(sk) {                       // 2-pass chamfer distance transform
+  const N = FN * FN, d = new Float32Array(N), D = 1.414;
+  for (let i = 0; i < N; i++) d[i] = sk[i] ? 0 : 1e4;
+  for (let y = 0; y < FN; y++) for (let x = 0; x < FN; x++) { const i = y * FN + x; let v = d[i];
+    if (x > 0) v = Math.min(v, d[i - 1] + 1); if (y > 0) { v = Math.min(v, d[i - FN] + 1); if (x > 0) v = Math.min(v, d[i - FN - 1] + D); if (x < FN - 1) v = Math.min(v, d[i - FN + 1] + D); } d[i] = v; }
+  for (let y = FN - 1; y >= 0; y--) for (let x = FN - 1; x >= 0; x--) { const i = y * FN + x; let v = d[i];
+    if (x < FN - 1) v = Math.min(v, d[i + 1] + 1); if (y < FN - 1) { v = Math.min(v, d[i + FN] + 1); if (x < FN - 1) v = Math.min(v, d[i + FN + 1] + D); if (x > 0) v = Math.min(v, d[i + FN - 1] + D); } d[i] = v; }
+  return d;
+}
+function finishFeature(sk, ar, holes = 0) { const pts = []; for (let i = 0; i < sk.length; i++) if (sk[i]) pts.push(i); return { sk, ar, holes, pts: Int32Array.from(pts), dt: distT(sk) }; }
+/** Closed loops in a letter (O, P, R = 1 · B = 2 · C, F, L = 0) — counts background areas not connected to the edge. */
+function countHoles(b) {
+  const N = FN * FN, seen = new Uint8Array(N), st = new Int32Array(N); let holes = 0;
+  const fill = s0 => { let sp = 0, n = 0; st[sp++] = s0; seen[s0] = 1; let edge = false;
+    while (sp) { const k = st[--sp], x = k % FN, y = (k / FN) | 0; n++; if (!x || !y || x === FN - 1 || y === FN - 1) edge = true;
+      for (const kk of [x > 0 ? k - 1 : -1, x < FN - 1 ? k + 1 : -1, y > 0 ? k - FN : -1, y < FN - 1 ? k + FN : -1]) if (kk >= 0 && !b[kk] && !seen[kk]) { seen[kk] = 1; st[sp++] = kk; } }
+    return { n, edge }; };
+  for (let i = 0; i < N; i++) if (!b[i] && !seen[i]) { const r = fill(i); if (!r.edge && r.n >= 3) holes++; }
+  return holes;
+}
+/** Rotate an ink mask (for extra template variations). */
+function rotateMask(mask, cw, ch, ang) {
+  const c = Math.cos(ang), s2 = Math.sin(ang), W2 = Math.ceil(Math.abs(cw * c) + Math.abs(ch * s2)), H2 = Math.ceil(Math.abs(cw * s2) + Math.abs(ch * c));
+  const out = new Uint8Array(W2 * H2);
+  for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+    const dx = x - W2 / 2, dy = y - H2 / 2, sx = Math.round(dx * c + dy * s2 + cw / 2), sy = Math.round(-dx * s2 + dy * c + ch / 2);
+    if (sx >= 0 && sy >= 0 && sx < cw && sy < ch) out[y * W2 + x] = mask[sy * cw + sx];
+  }
+  let x0 = W2, y0 = H2, x1 = -1, y1 = -1;
+  for (let i = 0; i < out.length; i++) if (out[i]) { const x = i % W2, y = (i / W2) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0) return { mask, cw, ch };
+  const w = x1 - x0 + 1, h = y1 - y0 + 1, m = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) m[y * w + x] = out[(y0 + y) * W2 + x0 + x];
+  return { mask: m, cw: w, ch: h };
+}
+/** A strip sample + two slightly rotated copies (people don't write perfectly upright). */
+function templatesFrom(mask, cw, ch) {
+  return [0, -.1, .1].map(a => { const r = a ? rotateMask(mask, cw, ch, a) : { mask, cw, ch }; const f = makeFeature(r.mask, r.cw, r.ch); f.strip = true; return f; });
+}
+function makeFeature(mask, cw, ch) {
+  const sc = (FN - 4) / Math.max(cw, ch), dw = Math.max(1, Math.round(cw * sc)), dh = Math.max(1, Math.round(ch * sc));
+  const ox = (FN - dw) >> 1, oy = (FN - dh) >> 1, b = new Uint8Array(FN * FN);
+  for (let y = 0; y < dh; y++) {
+    const sy0 = Math.min(ch - 1, Math.floor(y / sc)), sy1 = Math.max(sy0 + 1, Math.min(ch, Math.floor((y + 1) / sc)));
+    for (let x = 0; x < dw; x++) {
+      const sx0 = Math.min(cw - 1, Math.floor(x / sc)), sx1 = Math.max(sx0 + 1, Math.min(cw, Math.floor((x + 1) / sc)));
+      let on = 0, t = 0; for (let yy = sy0; yy < sy1; yy++) for (let xx = sx0; xx < sx1; xx++) { t++; on += mask[yy * cw + xx]; }
+      if (on / t > .3) b[(oy + y) * FN + ox + x] = 1;
+    }
+  }
+  let sk = thin(b); if (!sk.some(v => v)) sk = b;
+  return finishFeature(sk, cw / ch, countHoles(b));
+}
+function featDist(a, b) {
+  if (!a.pts.length || !b.pts.length) return 99;
+  // worse of the two directions (RMS) → a missing or extra stroke (C vs O, F vs P) really counts
+  let s1 = 0, s2 = 0; for (const p of a.pts) s1 += b.dt[p] ** 2; for (const p of b.pts) s2 += a.dt[p] ** 2;
+  return Math.max(Math.sqrt(s1 / a.pts.length), Math.sqrt(s2 / b.pts.length))
+    + Math.min(3, 1.5 * Math.abs(Math.log(a.ar / b.ar)))      // tall-and-thin vs wide
+    + .6 * Math.min(2, Math.abs((a.holes || 0) - (b.holes || 0)));   // closed loops differ
+}
+const featToJSON = f => ({ a: +f.ar.toFixed(3), h: f.holes || 0, s: f.strip ? 1 : 0, b: [...f.sk].join('').replace(/[01]{4}/g, q => parseInt(q, 2).toString(16)) });
+const featFromJSON = o => Object.assign(finishFeature(Uint8Array.from([...o.b].flatMap(h => [...parseInt(h, 16).toString(2).padStart(4, '0')].map(Number))), o.a, o.h || 0), { strip: !!o.s });
+const Hands = {   // per player: { A: [feature, …] } — strip samples (+rotations), then up to 3 learned corrections
+  data: [{}, {}],
+  get(pi) { return this.data[pi] || (this.data[pi] = {}); },
+  count(pi) { const h = this.get(pi); return Object.keys(h).filter(k => h[k].length).length; },
+  set(pi, L, fs) { this.get(pi)[L] = fs; },
+  add(pi, L, f) { const a = this.get(pi)[L] || (this.get(pi)[L] = []); a.push(f); const extra = a.filter(t => !t.strip); if (extra.length > 3) a.splice(a.indexOf(extra[0]), 1); },
+  load() { for (let pi = 0; pi < 2; pi++) { try { const raw = JSON.parse(localStorage.getItem('chalkWordleHand' + pi) || 'null'); if (raw) { const d = {}; for (const [L, arr] of Object.entries(raw)) d[L] = arr.map(featFromJSON); this.data[pi] = d; } } catch { /* ignore */ } } },
+  save(pi) { try { const out = {}; for (const [L, arr] of Object.entries(this.get(pi))) out[L] = arr.map(featToJSON); localStorage.setItem('chalkWordleHand' + pi, JSON.stringify(out)); } catch { /* storage full/private */ } },
+  reset(pi) { this.data[pi] = {}; try { localStorage.removeItem('chalkWordleHand' + pi); } catch { /* ignore */ } },
+};
+/** Ranked [letter, distance] list against this player's templates. */
+function classify(pi, f) {
+  const hand = Hands.get(pi), res = [];
+  for (const L in hand) { let best = 99; for (const t of hand[L]) best = Math.min(best, featDist(f, t)); res.push([L, best]); }
+  return res.sort((a, b) => a[1] - b[1]);
+}
+/** Decide a letter: personal templates first, Tesseract only for close calls. */
+async function readLetter(pi, c, slot) {
+  const hand = Hands.get(pi);
+  if (Hands.count(pi) >= 5) {
+    const f = makeFeature(c.mask, c.cw, c.ch); slot.lastFeat = f;
+    const r = classify(pi, f), b1 = r[0], b2 = r[1];
+    const fallback = b1 && b1[1] < H_REJECT ? b1[0] : '?';
+    if ((b1[1] < H_ACCEPT && (!b2 || b2[1] - b1[1] > H_MARGIN)) || !OCR.ready) return fallback;
+    const t = await OCR.read(c.canvas);
+    if (t === '?') return fallback;
+    if (!hand[t]?.length || r.slice(0, 3).some(x => x[0] === t)) return t;   // tie-break, or a letter you never taught
+    return fallback;
+  }
+  return OCR.ready ? OCR.read(c.canvas) : undefined;
+}
+const sigDiff = (a, b) => { let d = 0; for (let i = 0; i < 64; i++) d += Math.abs(a[i] - b[i]); return d; };
+/** Debounce: a reading only counts after two identical reads in a row. */
+function applyReading(s, reading, now) {
+  if (reading === undefined) return;
+  if (!s.armed) { if (reading === null) s.armed = true; else return; }   // wait for the old guess to be erased
+  if (reading === s.prev && s.ocr !== reading) { s.ocr = reading; s.since = now; }
+  s.prev = reading;
+}
+const grab = { c: document.createElement('canvas'), ctx: null };
+let ocrGen = 0, ocrTimer = null;
+function startOcrLoop() {
+  stopOcrLoop(); const gen = ++ocrGen;
+  const tick = async () => {
+    if (gen !== ocrGen) return;
+    try { await (S.screen === 'learn' ? learnCycle() : ocrCycle()); } catch (e) { console.warn(e); }
+    if (gen === ocrGen) ocrTimer = setTimeout(tick, 280);
+  };
+  tick();
+}
+function stopOcrLoop() { ocrGen++; clearTimeout(ocrTimer); }
+/** Grab a grayscale copy of just the part of the frame that covers these board boxes. */
+function grabRegion(boxes, Hbs, src) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of boxes) { const mx = b.w * .2, my = b.h * .2;
+    for (const [u, v] of [[b.x - mx, b.y - my], [b.x + b.w + mx, b.y - my], [b.x - mx, b.y + b.h + my], [b.x + b.w + mx, b.y + b.h + my]]) {
+      const [x, y] = applyH(Hbs, u, v); x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } }
+  x0 = clamp(Math.floor(x0), 0, src.w - 1); y0 = clamp(Math.floor(y0), 0, src.h - 1);
+  x1 = clamp(Math.ceil(x1), x0 + 1, src.w); y1 = clamp(Math.ceil(y1), y0 + 1, src.h);
+  const gw = x1 - x0, gh = y1 - y0; if (gw < 4 || gh < 4) return null;
+  if (grab.c.width !== gw || grab.c.height !== gh) { grab.c.width = gw; grab.c.height = gh; grab.ctx = null; }
+  const ctx = grab.ctx || (grab.ctx = grab.c.getContext('2d', { willReadFrequently: true }));
+  ctx.drawImage(src.el, x0, y0, gw, gh, 0, 0, gw, gh);
+  const d = ctx.getImageData(0, 0, gw, gh).data, gray = new Uint8Array(gw * gh);
+  for (let i = 0, p = 0; i < gray.length; i++, p += 4) gray[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8;
+  return { gray, gw, gh, x0, y0 };
+}
+async function ocrCycle() {
+  const g = S.game, L = S.layout; if (!g || g.over || S.screen !== 'play' || !S.board.locked || !L) return;
+  const src = getSrc(); if (!src.w) return;
+  const Hbs = solveHomography(boardRect(), S.board.quad); if (!Hbs) return;
+  const jobs = [];
+  g.players.forEach((p, pi) => { if (!p.active || p.done) return; p.rows[p.rowIdx].slots.forEach((s, i) => { if (!s.manual) jobs.push({ pi, s, box: L.zones[pi].rows[p.rowIdx].slots[i] }); }); });
+  if (jobs.length) {
+    const reg = grabRegion(jobs.map(j => j.box), Hbs, src); if (!reg) return;
+    const now = performance.now(), pending = [], crops = [];
+    for (const j of jobs) {
+      const c = preprocessSlot(reg.gray, reg.gw, reg.gh, reg.x0, reg.y0, Hbs, j.box); crops.push(c);
+      if (c.empty) { applyReading(j.s, null, now); continue; }
+      if (j.s.sig && j.s.sigLetter && sigDiff(j.s.sig, c.sig) < .16) { applyReading(j.s, j.s.sigLetter, now); continue; }
+      pending.push(Promise.resolve(readLetter(j.pi, c, j.s)).then(letter => {
+        if (letter === undefined) return;
+        j.s.sig = c.sig; j.s.sigLetter = letter; applyReading(j.s, letter, performance.now());
+      }).catch(e => console.warn(e)));
+    }
+    await Promise.all(pending);
+    if (S.debug) renderOcrStrip(jobs, crops);
+  }
+  checkAutoLock(); refreshBoard(); updateHud();
+}
+/** Learning phase: watch the A–Z boxes; a box that stays unchanged ~1 s becomes that letter's template. */
+async function learnCycle() {
+  const g = S.game, L = S.layout; if (!g || S.screen !== 'learn' || !S.board.locked || !L) return;
+  const src = getSrc(); if (!src.w) return;
+  const Hbs = solveHomography(boardRect(), S.board.quad); if (!Hbs) return;
+  const strips = L.strips.filter(st => g.players[st.pi].active); if (!strips.length) return;
+  const reg = grabRegion(strips.flatMap(st => st.cells), Hbs, src); if (!reg) return;
+  const now = performance.now();
+  for (const st of strips) {
+    const ls = S.learn[st.pi] || (S.learn[st.pi] = {});
+    for (const cell of st.cells) {
+      const c = preprocessSlot(reg.gray, reg.gw, reg.gh, reg.x0, reg.y0, Hbs, cell);
+      const k = ls[cell.L] || (ls[cell.L] = { status: 'empty', sig: null, since: 0 });
+      if (c.empty) { if (k.status !== 'ok') k.status = 'empty'; k.sig = null; continue; }
+      if (k.sig && sigDiff(k.sig, c.sig) < .12) {
+        if (k.status !== 'ok' && now - k.since > 900) { Hands.set(st.pi, cell.L, templatesFrom(c.mask, c.cw, c.ch)); k.status = 'ok'; }
+      } else { k.sig = c.sig; k.since = now; k.status = 'wip'; }
+    }
+  }
+  refreshBoard(); updateHud();
+}
+function enterLearn() {
+  S.screen = 'learn'; S.learn = S.learn || [{}, {}];
+  refreshBoard(); startOcrLoop(); updateHud();
+}
+function finishLearn() {
+  if (S.screen !== 'learn') return;
+  const act = S.game.players.filter(p => p.active);
+  act.forEach(p => Hands.save(p.id));
+  const missing = act.reduce((m, p) => m + 26 - Hands.count(p.id), 0);
+  S.learnDone = true; S.screen = 'play';
+  refreshBoard(); startOcrLoop(); updateHud();
+  toast(missing ? `Letters you skipped will use the standard reader` : 'Got your handwriting! Game on', 2600);
+}
+function checkAutoLock() {
+  const g = S.game; if (!g || g.over || S.screen !== 'play') return;
+  const now = performance.now();
+  g.players.forEach((p, pi) => {
+    if (!p.active || p.done) return;
+    const slots = p.rows[p.rowIdx].slots;
+    if (slots.some(s => s.manual) || !slots.every(s => s.ocr && s.ocr !== '?')) { p.lockProgress = 0; return; }
+    const held = now - Math.max(...slots.map(s => s.since));
+    p.lockProgress = clamp(held / STABLE_MS, 0, 1);
+    if (held >= STABLE_MS) tryLock(pi, true);
+  });
+}
+function renderOcrStrip(jobs, crops) {
+  const strip = $('#ocrStrip'); strip.innerHTML = '';
+  jobs.forEach((j, i) => {
+    const f = document.createElement('figure'), c = crops[i];
+    if (c?.canvas) f.appendChild(c.canvas); else f.className = 'empty';
+    const cap = document.createElement('figcaption'); cap.textContent = (j.s.ocr || '·'); f.appendChild(cap); strip.appendChild(f);
+  });
+}
+
+/* ==========================================================================
+   12. DEMO / NO-CAMERA MODE — a simulated whiteboard you can type or draw on.
+   It is fed through the exact same detector + OCR pipeline as the camera.
+   ========================================================================== */
+const Demo = {
+  canvas: $('#demoCanvas'), ctx: null, dpr: 1, quad: null, strokes: [], cur: null, alpha: [new Set(), new Set()],
+  setup() {
+    this.dpr = Math.min(2, devicePixelRatio || 1);
+    this.canvas.width = Math.round(innerWidth * this.dpr); this.canvas.height = Math.round(innerHeight * this.dpr);
+    this.ctx = this.canvas.getContext('2d'); this.computeQuad();
+  },
+  computeQuad() {   // a board on the wall, seen at a slight angle (so the homography is exercised)
+    const d = this.dpr, Wd = innerWidth, Ht = innerHeight, top = 64, bot = S.kbOpen ? (Ht < 620 ? 230 : 268) : 76;
+    const availH = Math.max(150, Ht - top - bot), availW = Wd * .92;
+    const bw = Math.min(availW, availH * 1.6), bh = bw / 1.6, x0 = (Wd - bw) / 2, y0 = top + (availH - bh) / 2, x1 = x0 + bw, y1 = y0 + bh;
+    this.quad = [[x0 + bw * .015, y0 + bh * .012], [x1 - bw * .008, y0 + bh * .035], [x1, y1 - bh * .01], [x0, y1]].map(([x, y]) => [x * d, y * d]);
+  },
+  render() {
+    const ctx = this.ctx, c = this.canvas, Wd = c.width, Ht = c.height, d = this.dpr, q = this.quad; if (!ctx) return;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const wall = ctx.createLinearGradient(0, 0, 0, Ht); wall.addColorStop(0, '#7d8c80'); wall.addColorStop(1, '#5d6b61');
+    ctx.fillStyle = wall; ctx.fillRect(0, 0, Wd, Ht);
+    ctx.strokeStyle = 'rgba(0,0,0,.1)'; ctx.lineWidth = 1.5 * d;          // painted wooden siding
+    for (let y = 18 * d; y < Ht; y += 30 * d) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(Wd, y); ctx.stroke(); }
+    const cx = q.reduce((a, p) => a + p[0], 0) / 4, cy = q.reduce((a, p) => a + p[1], 0) / 4;
+    const frame = q.map(([x, y]) => [cx + (x - cx) * 1.035, cy + (y - cy) * 1.055]);
+    const poly = pts => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); };
+    ctx.save(); ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 18 * d; ctx.shadowOffsetY = 8 * d; poly(frame); ctx.fillStyle = '#9ea4a7'; ctx.fill(); ctx.restore();
+    const fg = ctx.createLinearGradient(frame[0][0], frame[0][1], frame[2][0], frame[2][1]);
+    fg.addColorStop(0, '#c9cfd2'); fg.addColorStop(.5, '#8f969a'); fg.addColorStop(1, '#b5bbbe'); poly(frame); ctx.fillStyle = fg; ctx.fill();
+    const bg = ctx.createLinearGradient(q[0][0], q[0][1], q[2][0], q[2][1]);
+    bg.addColorStop(0, '#fbfcfa'); bg.addColorStop(.5, '#f1f3ef'); bg.addColorStop(1, '#e8ebe6'); poly(q); ctx.fillStyle = bg; ctx.fill();
+    ctx.save(); poly(q); ctx.clip();
+    const gl = ctx.createRadialGradient(q[0][0] + (q[1][0] - q[0][0]) * .3, q[0][1], 0, q[0][0] + (q[1][0] - q[0][0]) * .3, q[0][1], (q[1][0] - q[0][0]) * .45);
+    gl.addColorStop(0, 'rgba(255,255,255,.7)'); gl.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = gl; ctx.fillRect(0, 0, Wd, Ht);
+    // marker tray + markers
+    const th = (q[3][1] - q[0][1]) * .03;
+    poly([frame[3], frame[2], [frame[2][0] - th, frame[2][1] + th * 1.4], [frame[3][0] + th, frame[3][1] + th * 1.4]]);
+    ctx.restore(); ctx.fillStyle = '#80878a'; ctx.fill();
+    ['#1c2742', '#2a6b3f', '#b03a2e'].forEach((col, i) => { const mx = lerp(frame[3][0], frame[2][0], .62 + i * .07), my = lerp(frame[3][1], frame[2][1], .62 + i * .07) + th * .2; ctx.fillStyle = col; ctx.fillRect(mx, my, th * 3.2, th * .8); });
+    if (!S.board.locked || !S.layout) return;
+    const Hbs = solveHomography(boardRect(), q), k = dist(q[0], q[1]) / S.layout.BW;
+    ctx.save(); poly(q); ctx.clip(); ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1c2742';
+    for (const s of this.strokes) {
+      ctx.lineWidth = s.w * k; ctx.beginPath();
+      s.pts.forEach(([u, v], i) => { const [x, y] = applyH(Hbs, u, v); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      if (s.pts.length === 1) { const [x, y] = applyH(Hbs, ...s.pts[0]); ctx.lineTo(x + .1, y); }
+      ctx.stroke();
+    }
+    this.drawTyped(ctx, Hbs); ctx.restore();
+  },
+  /** Typed letters are drawn as dry-erase "handwriting" inside their slots. */
+  drawLetter(ctx, H, b, ch, seed) {
+    const tl = applyH(H, b.x, b.y), tr = applyH(H, b.x + b.w, b.y), bl = applyH(H, b.x, b.y + b.h);
+    ctx.save();
+    ctx.setTransform((tr[0] - tl[0]) / b.w, (tr[1] - tl[1]) / b.w, (bl[0] - tl[0]) / b.h, (bl[1] - tl[1]) / b.h, tl[0], tl[1]);
+    ctx.translate(b.w / 2, b.h * .9); ctx.rotate(((hashStr(seed) % 100) / 100 - .5) * .14);
+    ctx.font = `${b.h * .95}px "Permanent Marker","Marker Felt","Comic Sans MS",sans-serif`; ctx.fillText(ch, 0, 0);
+    ctx.restore();
+  },
+  drawTyped(ctx, H) {
+    const g = S.game, L = S.layout; ctx.fillStyle = '#1c2742'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    (L.strips || []).forEach(st => { const set = this.alpha[st.pi]; st.cells.forEach(c => { if (set.has(c.L)) this.drawLetter(ctx, H, c, c.L, 'a' + st.pi + c.L); }); });
+    g.players.forEach((p, pi) => { if (!p.active) return;
+      p.rows.forEach((row, r) => { if (r > p.rowIdx) return;
+        row.slots.forEach((s, i) => { if (!s.manual) return;
+          this.drawLetter(ctx, H, L.zones[pi].rows[r].slots[i], s.manual, pi + ':' + r + ':' + i);
+        });
+      });
+    });
+  },
+  toBoard(e) { return applyH(solveHomography(this.quad, boardRect()), e.clientX * this.dpr, e.clientY * this.dpr); },
+  hitStrip(pt) {
+    for (const st of S.layout.strips) if (pt[0] > st.x - 10 && pt[0] < st.x + st.w + 10) return { pi: st.pi, strip: true, s: st.cells[0].h };
+    return null;
+  },
+  hitRow(pt) {
+    const g = S.game, L = S.layout;
+    for (const p of g.players) {
+      if (!p.active || p.done) continue;
+      const row = L.zones[p.id].rows[p.rowIdx], s = row.s;
+      if (pt[0] > row.x0 - s * .3 && pt[0] < row.x0 + row.w + s * .3 && pt[1] > row.y - s * .3 && pt[1] < row.y + s * 1.15) return { pi: p.id, r: p.rowIdx, s };
+    }
+    return null;
+  },
+  bindDraw() {
+    const c = this.canvas;
+    c.addEventListener('pointerdown', e => {
+      if (!S.demo || (S.screen !== 'play' && S.screen !== 'learn') || !S.layout) return;
+      e.preventDefault(); c.setPointerCapture?.(e.pointerId);
+      const pt = this.toBoard(e), tag = this.hitStrip(pt) || (S.screen === 'play' ? this.hitRow(pt) : null), s = tag ? tag.s : S.layout.zones[0].rows[0].s;
+      this.cur = { pts: [pt], w: s * .085, tag }; this.strokes.push(this.cur);
+    });
+    c.addEventListener('pointermove', e => {
+      if (!this.cur) return; const pt = this.toBoard(e), last = this.cur.pts[this.cur.pts.length - 1];
+      if (dist(pt, last) > 1.2) this.cur.pts.push(pt);
+    });
+    const end = () => { this.cur = null; }; c.addEventListener('pointerup', end); c.addEventListener('pointercancel', end);
+  },
+};
+function wipeRow() {
+  const g = S.game; if (!g || S.screen !== 'play') return;
+  const p = g.players[S.kbPlayer]; if (!p || !p.active || p.done) return;
+  Demo.strokes = Demo.strokes.filter(s => !(s.tag && s.tag.pi === p.id && s.tag.r === p.rowIdx));
+  p.rows[p.rowIdx].slots.forEach(s => Object.assign(s, newSlot(true)));
+  refreshBoard(); updateHud();
+}
+
+/* ==========================================================================
+   13. HUD, KEYBOARD, BANNERS, TOASTS, CHALK CONFETTI
+   ========================================================================== */
+const KB_ROWS = ['QWERTYUIOP', 'ASDFGHJKL', '>ZXCVBNM<'];
+function buildKeyboard() {
+  const kb = $('#kbKeys');
+  kb.innerHTML = KB_ROWS.map(r => `<div class="kb-row">${[...r].map(k =>
+    k === '>' ? `<button class="key wide" data-k="ENTER">LOCK</button>` :
+    k === '<' ? `<button class="key wide" data-k="BACK" aria-label="Backspace">⌫</button>` :
+    `<button class="key" data-k="${k}">${k}</button>`).join('')}</div>`).join('');
+  kb.addEventListener('click', e => { const b = e.target.closest('.key'); if (b) onKey(b.dataset.k); });
+  $$('#kbTabs .kb-tab').forEach(t => t.onclick = () => { S.kbPlayer = +t.dataset.p; renderKeyboard(); });
+}
+function renderKeyboard() {
+  const g = S.game; if (!g) return; const p = g.players[S.kbPlayer];
+  $$('#kbKeys .key').forEach(b => { b.classList.remove('g', 'y', 'x'); const st = p?.keys[b.dataset.k]; if (st) b.classList.add(st); });
+  $$('#kbTabs .kb-tab').forEach(t => t.setAttribute('aria-pressed', String(+t.dataset.p === S.kbPlayer)));
+}
+function onKey(k) {
+  const g = S.game;
+  if (S.screen === 'learn' && g) {             // demo: the keyboard "writes" letters into the A–Z boxes
+    if (k === 'ENTER') return finishLearn();
+    if (S.demo && k.length === 1) { Demo.alpha[S.kbPlayer].add(k); }
+    return;
+  }
+  if (S.screen !== 'play' || !g || g.over) return;
+  const pi = S.kbPlayer, p = g.players[pi]; if (!p || !p.active || p.done) return;
+  const row = p.rows[p.rowIdx];
+  if (k === 'ENTER') { tryLock(pi, false); return; }
+  if (k === 'BACK') { for (let i = row.slots.length - 1; i >= 0; i--) if (row.slots[i].manual) { row.slots[i].manual = null; break; } }
+  else { const s = row.slots.find(s => !s.manual); if (!s) { toast('Row is full — press LOCK'); return; } s.manual = k; }
+  p.lockProgress = 0; refreshBoard(); updateHud();
+}
+function setKeyboard(open) {
+  S.kbOpen = open;
+  if (S.demo) { Demo.computeQuad(); if (S.board.locked) S.board.quad = Demo.quad.map(p => [...p]); }
+  updateHud();
+}
+function statusText() {
+  if (S.screen === 'calib') return 'Scanning for a whiteboard…';
+  if (S.screen === 'learn' && S.game) {
+    const act = S.game.players.filter(p => p.active);
+    return `Write A–Z in the side boxes · ${act.map(p => (act.length > 1 ? `P${p.id + 1} ` : '') + Hands.count(p.id) + '/26').join(' · ')}`;
+  }
+  const g = S.game; if (!g) return '';
+  if (S.screen === 'end') return 'Round over';
+  if (!S.demo && !S.board.pinned && performance.now() - S.board.lastSeen > 3000) return 'Board out of view — overlay held in place';
+  const p = g.players.find(q => q.active && !q.done); if (!p) return '';
+  const row = p.rows[p.rowIdx], who = duoBoth() ? 'Both players' : (g.duo ? p.name.replace('PLAYER', 'Player') : '');
+  if (row.slots.some(s => !s.armed)) return 'Erase the old guesses to start this round';
+  if (row.slots.some(s => s.manual)) return 'Typed letters — press Lock Guess';
+  const n = row.slots.filter(s => slotValue(s)).length;
+  if (n === g.len) return 'Hold still… locking in';
+  if (OCR.failed) return S.demo ? 'Reader offline — type with the keyboard' : 'Letter reader offline — tap ⌨ to type';
+  if (!OCR.ready) return S.demo ? 'Type a guess (letter reader warming up…)' : 'Warming up the letter reader…';
+  if (S.demo && !n) return 'Type a guess, or draw letters on the board';
+  return `${who ? who + ': ' : ''}one CAPITAL letter per line · ${n}/${g.len}`;
+}
+function updateHud() {
+  const playing = S.screen === 'play', learning = S.screen === 'learn', g = S.game, both = duoBoth();
+  $('#status').textContent = statusText();
+  $('#hudBottom').hidden = !(playing || learning);
+  $('#gameBar').hidden = !playing; $('#learnBar').hidden = !learning;
+  $('#learnFill').hidden = !S.demo;
+  $('#keyboard').hidden = !((playing || (learning && S.demo)) && S.kbOpen);
+  $('#kbBtn').setAttribute('aria-pressed', String(S.kbOpen));
+  $('#kbTabs').hidden = !both;
+  $('#wipeBtn').hidden = !S.demo;
+  $('#lockP2').hidden = !both;
+  $('#lockP1 span').textContent = both ? 'P1 · Lock' : 'Lock Guess';
+  $('#rescanBtn').hidden = !(playing || learning || S.screen === 'end') || S.demo;
+  $('#pinBtn').hidden = !(playing || learning || S.screen === 'end') || S.demo;
+  $('#eyeBtn').hidden = !playing;
+  $('#ocrStrip').hidden = !(playing && S.debug);
+  if (g) renderKeyboard();
+}
+let toastT = 0;
+function toast(msg, ms = 2200) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), ms); }
+let bannerT = 0;
+function showBanner({ title, sub = '', note = '', word = null, won = false, buttons = [], timeout = 0, modal = false }) {
+  const b = $('#banner'); clearTimeout(bannerT);
+  b.className = 'banner' + (modal ? ' modal' : ' info');
+  b.innerHTML = `<div class="banner-card chalkboard" role="dialog">
+    <h2 class="chalk-text write-on">${esc(title)}</h2>
+    ${word ? `<div class="word-tiles ${won ? 'won' : 'lost'}">${[...word].map((c, i) => `<span style="animation-delay:${.6 + i * .09}s">${c}</span>`).join('')}</div>` : ''}
+    ${sub ? `<p>${esc(sub)}</p>` : ''}${note ? `<p class="note">${esc(note)}</p>` : ''}
+    ${buttons.length ? `<div class="banner-btns">${buttons.map((x, i) => `<button class="abtn ${x.primary ? 'lock' : ''}" data-i="${i}">${esc(x.label)}</button>`).join('')}</div>` : ''}
+  </div>`;
+  b.hidden = false;
+  $$('.banner-btns button', b).forEach(btn => btn.onclick = () => buttons[+btn.dataset.i].on());
+  if (timeout) bannerT = setTimeout(hideBanner, timeout);
+}
+function hideBanner() { clearTimeout(bannerT); const b = $('#banner'); b.hidden = true; b.innerHTML = ''; }
+const FX = {   // chalk-dust confetti
+  c: $('#fxCanvas'), ctx: null, parts: [], dirty: false,
+  resize() { const d = Math.min(2, devicePixelRatio || 1); this.c.width = innerWidth * d; this.c.height = innerHeight * d; this.ctx = this.c.getContext('2d'); this.ctx.setTransform(d, 0, 0, d, 0, 0); },
+  burst(x, y, n) {
+    const cols = ['#F4F1EA', '#5E8C61', '#D4A359', '#F4F1EA', '#cfc9bb'];
+    for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, v = 2 + Math.random() * 7;
+      this.parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 3, life: 70 + Math.random() * 60, max: 130, w: 3 + Math.random() * 7, h: 2 + Math.random() * 3, r: Math.random() * 6, vr: (Math.random() - .5) * .3, col: cols[i % cols.length] }); }
+  },
+  celebrate() { const Wd = innerWidth, Ht = innerHeight; this.burst(Wd * .25, Ht * .35, 70); setTimeout(() => this.burst(Wd * .75, Ht * .3, 70), 250); setTimeout(() => this.burst(Wd * .5, Ht * .5, 90), 520); },
+  step() {
+    const x = this.ctx; if (!x) return;
+    if (!this.parts.length) { if (this.dirty) { x.clearRect(0, 0, innerWidth, innerHeight); this.dirty = false; } return; }
+    this.dirty = true; x.clearRect(0, 0, innerWidth, innerHeight);
+    for (let i = this.parts.length - 1; i >= 0; i--) {
+      const p = this.parts[i]; p.vy += .18; p.vx *= .99; p.x += p.vx; p.y += p.vy; p.r += p.vr;
+      if (--p.life <= 0 || p.y > innerHeight + 20) { this.parts.splice(i, 1); continue; }
+      x.save(); x.globalAlpha = .9 * p.life / p.max; x.translate(p.x, p.y); x.rotate(p.r); x.fillStyle = p.col; x.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); x.restore();
+    }
+  },
+};
+
+/* ==========================================================================
+   14. FLOW: start → eraser → camera/demo → calibrate → play
+   ========================================================================== */
+function showStage() {
+  $('#stage').hidden = false;
+  $('#video').hidden = S.demo; $('#demoCanvas').hidden = !S.demo;
+  S.kbOpen = S.demo && innerHeight >= 560;   // short landscape screens: keyboard opens on demand
+  if (S.demo) Demo.setup();
+  FX.resize(); sizeCalib(); renderKeyboard(); updateHud();
+}
+async function startGame() {
+  if (S.screen !== 'menu') return;
+  S.screen = 'transition'; S.demo = !!S.settings.demo;
+  $('#help').hidden = true;
+  newGame(false);
+  const camP = S.demo ? Promise.resolve(null) : Cam.start().then(() => null, e => e);  // ask for the camera during the wipe
+  OCR.init();
+  await EraserFX.run();
+  $('#menu').hidden = true;
+  const msg = $('#slateMsg'); msg.textContent = S.demo ? 'Setting up the practice whiteboard…' : 'Opening the camera… allow access if asked'; msg.hidden = false;
+  const err = await camP;
+  showStage();
+  if (err) { S.screen = 'camerror'; EraserFX.reveal(); showCameraError(err); return; }
+  enterCalibration(); EraserFX.reveal();
+}
+function showCameraError(err) {
+  const msg = err.name === 'NotAllowedError' ? 'Camera permission was blocked. Allow camera access for this site, then try again.'
+    : err.name === 'NotFoundError' ? 'No camera was found on this device.' : (err.message || String(err));
+  showBanner({ title: 'Camera unavailable', sub: msg, note: 'You can still try every part of the game in Demo mode.', modal: true, buttons: [
+    { label: 'Try Demo Mode', primary: true, on: () => { hideBanner(); S.demo = true; S.settings.demo = true; saveSettings(); showStage(); enterCalibration(); } },
+    { label: 'Menu', on: backToMenu },
+  ] });
+}
+function backToMenu() {
+  hideBanner(); stopOcrLoop(); Cam.stop(); clearTimeout(S.frameBtnT);
+  S.screen = 'menu'; S.board.locked = false; S.layout = null; S.els = null; S.stripEls = null; S.game = null;
+  S.learnDone = false; S.learn = null; Demo.alpha = [new Set(), new Set()]; Demo.strokes = [];
+  $('#stage').hidden = true; $('#boardLayer').hidden = true; $('#calibUI').hidden = true; $('#board').innerHTML = '';
+  const m = $('#menu'); m.hidden = false; m.classList.remove('fade-in'); void m.offsetWidth; m.classList.add('fade-in');
+  renderMenu(); EraserFX.rest();
+}
+function bindHud() {
+  $('#menuBtn').onclick = () => {
+    if (S.screen !== 'play' && S.screen !== 'learn') return backToMenu();
+    showBanner({ title: 'Leave this game?', modal: true, buttons: [{ label: 'Leave', primary: true, on: backToMenu }, { label: 'Keep playing', on: hideBanner }] });
+  };
+  $('#rescanBtn').onclick = () => { if (['play', 'learn', 'end'].includes(S.screen)) { hideBanner(); enterCalibration(); } };
+  $('#pinBtn').onclick = () => { S.board.pinned = !S.board.pinned; $('#pinBtn').setAttribute('aria-pressed', String(S.board.pinned)); toast(S.board.pinned ? 'Overlay frozen in place' : 'Overlay follows the board again'); };
+  $('#eyeBtn').onclick = () => { S.debug = !S.debug; $('#eyeBtn').setAttribute('aria-pressed', String(S.debug)); if (!S.debug) $('#ocrStrip').innerHTML = ''; updateHud(); };
+  $('#kbBtn').onclick = () => setKeyboard(!S.kbOpen);
+  $('#wipeBtn').onclick = wipeRow;
+  $('#lockP1').onclick = () => tryLock(duoBoth() ? 0 : S.game.players.findIndex(p => p.active), false);
+  $('#lockP2').onclick = () => tryLock(1, false);
+  $('#useFrameBtn').onclick = useScanFrame;
+  $('#learnDone').onclick = finishLearn;
+  $('#learnFill').onclick = () => { S.game.players.forEach(p => { if (p.active) [...AZ].forEach(L => Demo.alpha[p.id].add(L)); }); };
+  $('#learnReset').onclick = () => {
+    S.game.players.forEach(p => { if (p.active) { Hands.reset(p.id); S.learn[p.id] = {}; Demo.alpha[p.id].clear(); } });
+    Demo.strokes = Demo.strokes.filter(t => !t.tag?.strip);
+    refreshBoard(); updateHud(); toast('Saved handwriting cleared — write A–Z again');
+  };
+  addEventListener('keydown', e => {
+    if ((S.screen !== 'play' && S.screen !== 'learn') || e.target.closest?.('input')) return;
+    const k = e.key;
+    if (/^[a-z]$/i.test(k)) onKey(k.toUpperCase());
+    else if (k === 'Backspace') onKey('BACK');
+    else if (k === 'Enter') onKey('ENTER');
+    else if (k === 'Tab' && duoBoth()) { S.kbPlayer = 1 - S.kbPlayer; renderKeyboard(); toast(`${S.game.players[S.kbPlayer].name} is typing`); }
+    else return;
+    e.preventDefault();
+  });
+}
+
+/* ==========================================================================
+   15. MAIN LOOP
+   ========================================================================== */
+let lastDet = 0;
+function loop(now) {
+  requestAnimationFrame(loop);
+  if (S.screen === 'calib' || S.screen === 'learn' || S.screen === 'play' || S.screen === 'end') {
+    if (S.demo) Demo.render();
+    const src = getSrc();
+    if (src.w) {
+      const tracking = S.board.locked && !S.board.pinned && !S.demo;
+      if ((S.screen === 'calib' || tracking) && now - lastDet > (S.screen === 'calib' ? 70 : 140)) {
+        lastDet = now; onDetect(Detector.detect(src.el, src.w, src.h), now, src);
+      }
+      if (S.screen === 'calib') drawCalib(now);
+      if (S.board.locked) placeBoard();
+    }
+  }
+  FX.step();
+}
+let resizeT = 0;
+addEventListener('resize', () => {
+  clearTimeout(resizeT);
+  resizeT = setTimeout(() => {
+    FX.resize(); sizeCalib();
+    if (S.demo && !$('#stage').hidden) { Demo.setup(); if (S.board.locked) S.board.quad = Demo.quad.map(p => [...p]); }
+    if (S.screen === 'menu') EraserFX.rest();
+    lastMatrix = '';
+  }, 150);
+});
+function init() {
+  Hands.load(); initMenu(); buildKeyboard(); bindHud(); EraserFX.init(); Demo.bindDraw(); FX.resize(); sizeCalib();
+  document.fonts?.load?.('40px "Permanent Marker"').catch(() => {});
+  document.fonts?.ready?.then(() => { if (S.screen === 'menu') EraserFX.rest(); });
+  setInterval(() => { if (S.screen === 'play' || S.screen === 'calib' || S.screen === 'learn') $('#status').textContent = statusText(); }, 500);
+  requestAnimationFrame(loop);
+}
+init();
+</script>
+</body>
+</html>
