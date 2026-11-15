@@ -23,6 +23,9 @@
                      the same homography, cleaned up (grayscale → adaptive
                      threshold → blob filter) and read by Tesseract.js (OCR =
                      reading text from images), A–Z only.
+    3b. Learn ...... the player first writes A–Z in boxes on the side of the
+                     board; those become personal letter templates (saved in
+                     the browser) that the reader matches against.
     5. Demo ........ no camera: a simulated whiteboard you can type or draw on.
 
   Run it: serve over HTTPS or http://localhost (camera needs a secure context),
@@ -232,6 +235,16 @@ input{font:inherit}
 @keyframes showBig{0%,50%{opacity:0}51%,100%{opacity:1}}
 .brow.shake{animation:shake .4s}
 @keyframes shake{20%,60%{transform:translateX(-1.2%)}40%,80%{transform:translateX(1.2%)}}
+.astrip.off{opacity:.35}
+#board:not(.learning) .astrip{opacity:.55}
+#board.learning .zone,#board.learning .b-divider{display:none}
+.acell{position:absolute;border:var(--lw) dashed rgba(244,241,234,.55);border-radius:calc(var(--s)*.08);box-shadow:0 0 0 1px rgba(20,24,23,.35);transition:background-color .3s,border-color .3s}
+.acell .alab{position:absolute;left:5%;top:3%;font-style:normal;font-size:calc(var(--s)*.26);line-height:1;color:rgba(244,241,234,.8);text-shadow:0 0 3px #000}
+.acell.wip{border-style:solid;border-color:var(--ochre)}
+.acell.saved{border-color:rgba(160,205,163,.75)}
+.acell.ok{border-style:solid;border-color:#a7d6aa;background:rgba(94,140,97,.3)}
+.acell.ok::after,.acell.saved::after{content:"✓";position:absolute;right:6%;bottom:2%;font-size:calc(var(--s)*.3);line-height:1;color:#c6ebc8;text-shadow:0 0 3px #000}
+.b-header.long{font-size:calc(var(--hh)*.42)!important}
 .lockbar{position:absolute;height:calc(var(--bw)*1.3);border-radius:var(--bw);overflow:hidden;pointer-events:none}
 .lockbar b{display:block;height:100%;width:0;background:var(--ochre);box-shadow:0 0 calc(var(--bw)*2) var(--ochre);transition:width .35s linear}
 
@@ -369,8 +382,17 @@ input{font:inherit}
         </div>
       </div>
 
+      <div class="group">
+        <div class="label"><span class="n">3</span>Topic</div>
+        <div class="chips" data-key="topic">
+          <button class="chip" data-v="Animals">Animals<small>sloth · panda</small></button>
+          <button class="chip" data-v="Food">Food<small>mango · bagel</small></button>
+          <button class="chip" data-v="mix">Both<small>surprise me</small></button>
+        </div>
+      </div>
+
       <div class="group" id="sideGroup" hidden>
-        <div class="label"><span class="n">3</span>This phone watches</div>
+        <div class="label"><span class="n">4</span>This phone watches</div>
         <div class="chips" data-key="side">
           <button class="chip" data-v="p1">Player 1<small>left side</small></button>
           <button class="chip" data-v="p2">Player 2<small>right side</small></button>
@@ -409,6 +431,7 @@ input{font:inherit}
     <ol class="help-list">
       <li>Prop the phone so its back camera sees the whole whiteboard.</li>
       <li>Wait for <b>Whiteboard Detected!</b> The topic and blank lines appear on screen, "projected" onto the board.</li>
+      <li>First, write A–Z once in the small boxes on the side of the board. The game learns how <i>you</i> write each letter (it remembers it next time).</li>
       <li>Write one CAPITAL letter on each line with a dry-erase marker.</li>
       <li>Step out of the way. After about 2 steady seconds the guess locks in and the tiles turn green, ochre or gray.</li>
       <li>Write your next guess on the new row below. You get 6 tries.</li>
@@ -453,7 +476,12 @@ input{font:inherit}
       </div>
       <div id="kbKeys"></div>
     </div>
-    <div class="actions">
+    <div class="actions" id="learnBar" hidden>
+      <button id="learnReset" class="abtn icon" title="Forget my saved handwriting">Reset</button>
+      <button id="learnFill" class="abtn" hidden>Write A–Z for me</button>
+      <button id="learnDone" class="abtn lock"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-11"/></svg><span>Done · Start game</span></button>
+    </div>
+    <div class="actions" id="gameBar">
       <button id="lockP1" class="abtn lock"><svg viewBox="0 0 24 24"><path d="M5 12l5 5 9-11"/></svg><span>Lock Guess</span></button>
       <button id="kbBtn" class="abtn icon" aria-pressed="false" aria-label="Type letters"><svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg></button>
       <button id="wipeBtn" class="abtn icon" aria-label="Wipe current row" hidden><svg viewBox="0 0 24 24"><path d="M4 15l7-7 7 7-5 5H9z"/><path d="M14 20h7"/></svg></button>
@@ -492,40 +520,20 @@ function mulberry32(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = 
 const W = s => s.trim().split(/\s+/);
 const WORD_BANK = {
   Animals: {
-    easy:   W('CAT DOG COW PIG HEN FOX OWL BEE ANT BAT FISH FROG DUCK BEAR LION GOAT DEER SEAL WOLF BIRD CRAB MOUSE HORSE SHEEP'),
-    medium: W('SLOTH ZEBRA CAMEL OTTER MOOSE LLAMA PANDA TIGER EAGLE SHARK SQUID RABBIT TURTLE BEAVER DONKEY PARROT WALRUS FALCON JAGUAR LIZARD'),
-    hard:   W('HOOPOE QUOKKA AXOLOTL NARWHAL OKAPI TAPIR IBEX GNU LYNX WOMBAT OCELOT PANGOLIN CHAMOIS MARMOSET KINKAJOU'),
+    easy:   W('CAT DOG COW PIG HEN FOX OWL BEE ANT BAT RAT YAK EMU APE FISH FROG DUCK BEAR LION GOAT DEER SEAL WOLF BIRD CRAB MOLE TOAD SWAN LAMB PONY MOUSE HORSE SHEEP SNAKE WHALE'),
+    medium: W('SLOTH ZEBRA CAMEL OTTER MOOSE LLAMA PANDA TIGER EAGLE SHARK SQUID KOALA HIPPO BISON HYENA RAVEN STORK RABBIT TURTLE BEAVER DONKEY PARROT WALRUS FALCON JAGUAR LIZARD MONKEY BADGER FERRET PIGEON GIRAFFE PENGUIN DOLPHIN HAMSTER OCTOPUS'),
+    hard:   W('HOOPOE QUOKKA AXOLOTL NARWHAL OKAPI TAPIR IBEX GNU LYNX WOMBAT OCELOT BONOBO DUGONG JERBOA SERVAL CARACAL GHARIAL TARSIER CHAMOIS PANGOLIN MARMOSET KINKAJOU AARDVARK PLATYPUS CAPYBARA'),
   },
   Food: {
-    easy:   W('PIE EGG JAM TEA BUN NUT FIG RICE CAKE MILK CORN SOUP PEAR PLUM BEAN BREAD APPLE PIZZA HONEY'),
-    medium: W('MANGO BAGEL PASTA CURRY LEMON OLIVE GRAPE TOAST SALAD NOODLE CARROT CHEESE BUTTER PEPPER WAFFLE MUFFIN PICKLE TOMATO PRETZEL'),
-    hard:   W('QUINOA GNOCCHI KUMQUAT SAFFRON QUICHE BRIOCHE ZUCCHINI LYCHEE TAHINI WASABI JICAMA SORBET FENNEL ANCHOVY COUSCOUS'),
-  },
-  Science: {
-    easy:   W('GAS ICE LAB ATOM CELL HEAT MASS WAVE BONE LENS GERM ACID IRON SALT SOUND LIGHT'),
-    medium: W('LASER PRISM FORCE SOLID MAGMA ENERGY MAGNET PLASMA PROTON OXYGEN CARBON FOSSIL NEURON LIQUID GRAVITY CIRCUIT'),
-    hard:   W('QUARTZ ISOTOPE ENZYME PHOTON QUANTUM GENOME ZYGOTE PHLOEM XYLEM HELIX LYMPH OSMOSIS CATALYST NEUTRINO'),
-  },
-  Space: {
-    easy:   W('SUN SKY STAR MOON MARS RING DUST GLOW EARTH SPACE ALIEN'),
-    medium: W('PLANET ORBIT COMET VENUS PLUTO SATURN METEOR GALAXY ROCKET LUNAR SOLAR COSMOS CRATER URANUS JUPITER ECLIPSE'),
-    hard:   W('ZENITH QUASAR PULSAR NEBULA NADIR PARSEC ZODIAC CORONA EQUINOX PERIGEE SOLSTICE APHELION MAGNETAR'),
-  },
-  Nature: {
-    easy:   W('TREE LEAF RAIN SNOW WIND LAKE HILL SEED ROSE MUD FOG SAND ROOT POND BUSH NEST'),
-    medium: W('FOREST CANYON ISLAND VALLEY BREEZE MEADOW RIVER OCEAN CLOUD STORM CORAL MAPLE TULIP DESERT JUNGLE GLACIER VOLCANO'),
-    hard:   W('ZEPHYR FJORD TUNDRA GEYSER BAYOU LICHEN CHASM KARST ABYSS SEQUOIA CYPRESS ESTUARY SAVANNA MONSOON'),
-  },
-  Objects: {
-    easy:   W('BOOK PEN CUP HAT KEY BOX BED LAMP DOOR BALL SHOE BAG DESK SOCK CHAIR CLOCK SPOON'),
-    medium: W('ANCHOR BRIDGE CANDLE MIRROR PENCIL BASKET LADDER HAMMER KETTLE WALLET BUTTON TICKET SCARF PIANO TORCH GLOBE COMPASS'),
-    hard:   W('SPHINX SEXTANT ABACUS KAZOO QUILL GIMBAL TRIVET SCYTHE ZITHER YOKE MONOCLE THIMBLE CAULDRON PENDULUM'),
+    easy:   W('PIE EGG JAM TEA BUN NUT FIG HAM OAT RICE CAKE MILK CORN SOUP PEAR PLUM BEAN KIWI LIME TACO CHIPS BREAD APPLE PIZZA HONEY PEACH JUICE CANDY'),
+    medium: W('MANGO BAGEL PASTA CURRY LEMON OLIVE GRAPE TOAST SALAD MELON ONION GARLIC NOODLE CARROT CHEESE BUTTER PEPPER WAFFLE MUFFIN PICKLE TOMATO CEREAL CHERRY BANANA BURGER POTATO YOGURT PRETZEL AVOCADO PANCAKE SANDWICH'),
+    hard:   W('QUINOA GNOCCHI KUMQUAT SAFFRON QUICHE BRIOCHE LYCHEE TAHINI WASABI JICAMA SORBET FENNEL ANCHOVY PAPRIKA RISOTTO BAKLAVA CHUTNEY ZUCCHINI COUSCOUS TIRAMISU TAMARIND FOCACCIA KOHLRABI'),
   },
 };
 /** Same difficulty + same code → same topic and word (so two phones can race). */
-function pickWord(diff, code) {
-  const rng = mulberry32(hashStr(diff + '|' + code));
-  const topics = Object.keys(WORD_BANK);
+function pickWord(diff, code, topicSetting = 'mix') {
+  const rng = mulberry32(hashStr(diff + '|' + topicSetting + '|' + code));
+  const topics = WORD_BANK[topicSetting] ? [topicSetting] : Object.keys(WORD_BANK);
   const topic = topics[Math.floor(rng() * topics.length)];
   const list = WORD_BANK[topic][diff];
   return { topic, word: list[Math.floor(rng() * list.length)] };
@@ -534,7 +542,7 @@ function pickWord(diff, code) {
 /* ==========================================================================
    2. APP STATE + SETTINGS
    ========================================================================== */
-const DEFAULTS = { mode: 'solo', difficulty: 'easy', side: 'both', code: '', demo: false };
+const DEFAULTS = { mode: 'solo', difficulty: 'easy', topic: 'mix', side: 'both', code: '', demo: false };
 function loadSettings() { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('chalkWordle') || '{}') }; } catch { return { ...DEFAULTS }; } }
 function saveSettings() { try { localStorage.setItem('chalkWordle', JSON.stringify(S.settings)); } catch { /* private mode */ } }
 
@@ -845,7 +853,7 @@ function newGame(again) {
     if (!st.code) st.code = randCode();
     code = st.code; saveSettings();
   } else code = String(Math.random());
-  const { word, topic } = pickWord(st.difficulty, code);
+  const { word, topic } = pickWord(st.difficulty, code, st.topic);
   const requireClear = again && !S.demo;   // old marker writing is still on the real board
   const players = [];
   for (let i = 0; i < (duo ? 2 : 1); i++) {
@@ -875,6 +883,10 @@ function tryLock(pi, auto) {
     if (!auto) { toast(`${duoBoth() ? p.name + ': ' : ''}write or type all ${g.len} letters first`); shakeRow(pi); }
     return false;
   }
+  // you typed a fix over a misread letter → keep that handwriting sample for next time
+  let learned = false;
+  row.slots.forEach(s => { if (s.manual && s.lastFeat) { Hands.add(pi, s.manual, s.lastFeat); learned = true; } });
+  if (learned) Hands.save(pi);
   const res = scoreGuess(letters.join(''), g.word);
   row.letters = letters; row.result = res; p.lockProgress = 0;
   const rank = { x: 1, y: 2, g: 3 };   // keyboard keeps the best colour seen for each letter
@@ -910,7 +922,7 @@ function endGame() {
 }
 function playAgain() {
   hideBanner(); newGame(true);
-  if (S.demo) Demo.strokes = [];
+  if (S.demo) Demo.strokes = Demo.strokes.filter(t => t.tag?.strip);   // the A–Z strip stays on the board
   buildBoard(); S.screen = 'play'; startOcrLoop(); renderKeyboard(); updateHud();
   if (!S.demo) toast('New word! Erase the old guesses first');
 }
@@ -922,21 +934,32 @@ function computeLayout(BW, BH, g) {
   const duo = g.players.length === 2, n = g.len, pad = BW * .035;
   const headerH = clamp(BH * .12, 46, 120);
   const header = { x: pad, y: pad * .7, w: BW - 2 * pad, h: headerH };
+  const bodyTop = header.y + headerH + BH * .03, bottom = BH - pad * .6;
+  // --- A–Z handwriting strips on the outer side(s): 3 columns × 9 rows of small boxes
+  const cols = 3, nrows = 9, cellH0 = (bottom - bodyTop) / nrows;
+  const cw = Math.min(cellH0 * .82 * .8, BW * (duo ? .14 : .2) / (cols + (cols - 1) * .25)), ch = cw / .8, cg = cw * .25;
+  const sw = cols * cw + (cols - 1) * cg;
+  const strips = (duo ? ['left', 'right'] : ['right']).map((side, k) => {
+    const x = side === 'left' ? pad : BW - pad - sw;
+    return { pi: duo ? k : 0, side, x, w: sw, cells: [...AZ].map((L, i) => ({ L, x: x + (i % cols) * (cw + cg), y: bodyTop + Math.floor(i / cols) * cellH0 + (cellH0 - ch) / 2, w: cw, h: ch })) };
+  });
+  // --- guess rows in the remaining middle area
+  const gx0 = duo ? pad + sw + BW * .025 : pad, gx1 = BW - pad - sw - BW * (duo ? .025 : .03);
   const labelH = duo ? clamp(BH * .055, 22, 60) : 0;
-  const top = header.y + headerH + BH * .03 + labelH, bottom = BH - pad * .6, rowH = (bottom - top) / 6;
-  const gutter = BW * .012, zw = duo ? (BW - 2 * pad - gutter * 3) / 2 : BW - 2 * pad;
-  const zxs = duo ? [pad, BW / 2 + gutter * 1.5] : [pad];
+  const top = bodyTop + labelH, rowH = (bottom - top) / 6;
+  const gutter = BW * .012, zw = duo ? (gx1 - gx0 - gutter * 3) / 2 : gx1 - gx0;
+  const zxs = duo ? [gx0, gx0 + zw + gutter * 3] : [gx0];
   const zones = zxs.map(zx => {
     const numW = Math.min(rowH * .5, zw * .08), avail = zw - numW;
     const s = Math.min(rowH * .7, avail * .95 / (n * .78 + (n - 1) * .2));
-    const sw = s * .78, gap = s * .2, rw = n * sw + (n - 1) * gap, x0 = zx + numW + (avail - rw) / 2;
+    const sw2 = s * .78, gap = s * .2, rw = n * sw2 + (n - 1) * gap, x0 = zx + numW + (avail - rw) / 2;
     const rows = [...Array(6)].map((_, r) => {
       const y = top + r * rowH + (rowH - s) * .42;
-      return { y, s, x0, w: rw, numW, slots: [...Array(n)].map((_, i) => ({ x: x0 + i * (sw + gap), y, w: sw, h: s })) };
+      return { y, s, x0, w: rw, numW, slots: [...Array(n)].map((_, i) => ({ x: x0 + i * (sw2 + gap), y, w: sw2, h: s })) };
     });
     return { x: zx, w: zw, label: duo ? { x: zx, y: top - labelH - BH * .005, w: zw, h: labelH } : null, rows };
   });
-  return { BW, BH, header, zones, divider: duo ? { x: BW / 2, y1: header.y + headerH + BH * .02, y2: bottom } : null };
+  return { BW, BH, header, zones, strips, divider: duo ? { x: gx0 + zw + gutter * 1.5, y1: bodyTop - BH * .01, y2: bottom } : null };
 }
 function buildBoard() {
   const g = S.game; if (!g) return;
@@ -944,7 +967,12 @@ function buildBoard() {
   const el = $('#board'); el.style.width = L.BW + 'px'; el.style.height = L.BH + 'px';
   let h = `<div class="b-tint"></div><div class="b-outline"></div>`;
   const hd = L.header;
-  h += `<div class="b-header" style="left:${hd.x}px;top:${hd.y}px;width:${hd.w}px;height:${hd.h}px;font-size:${hd.h * .6}px"><span>TOPIC: ${esc(g.topic.toUpperCase())}</span></div>`;
+  h += `<div class="b-header" id="bHeader" style="left:${hd.x}px;top:${hd.y}px;width:${hd.w}px;height:${hd.h}px;font-size:${hd.h * .6}px;--hh:${hd.h}px"><span></span></div>`;
+  L.strips.forEach(st => {
+    h += `<div class="astrip${g.players[st.pi].active ? '' : ' off'}" data-p="${st.pi}">`;
+    st.cells.forEach(c => { h += `<div class="acell" data-l="${c.L}" style="left:${c.x}px;top:${c.y}px;width:${c.w}px;height:${c.h}px;--s:${c.h}px;--lw:${Math.max(1.5, c.h * .03)}px"><em class="alab">${c.L}</em></div>`; });
+    h += `</div>`;
+  });
   if (L.divider) h += `<div class="b-divider" style="left:${L.divider.x}px;top:${L.divider.y1}px;height:${L.divider.y2 - L.divider.y1}px"></div>`;
   L.zones.forEach((z, pi) => {
     const p = g.players[pi];
@@ -964,12 +992,25 @@ function buildBoard() {
     const rowEl = el.querySelector(`.zone[data-p="${pi}"] .brow[data-r="${r}"]`);
     return { row: rowEl, slots: $$('.slot', rowEl), bar: $('.lockbar b', rowEl) };
   }));
+  S.stripEls = L.strips.map(st => { const el2 = el.querySelector(`.astrip[data-p="${st.pi}"]`); return { pi: st.pi, cells: Object.fromEntries($$('.acell', el2).map(e => [e.dataset.l, e])) }; });
   g.players.forEach(p => { p.shownRows = -1; p.rows.forEach(r => { r.revealing = false; }); });
   refreshBoard();
 }
 /** Sync the board DOM with game state (called after OCR cycles / key presses). */
 function refreshBoard() {
   const g = S.game; if (!g || !S.els) return;
+  const learning = S.screen === 'learn', board = $('#board');
+  board.classList.toggle('learning', learning);
+  const head = $('#bHeader'), htxt = learning ? 'WRITE A–Z IN THE SIDE BOXES' : `TOPIC: ${g.topic.toUpperCase()}`;
+  if (head && head.firstChild.textContent !== htxt) { head.firstChild.textContent = htxt; head.classList.toggle('long', learning); }
+  (S.stripEls || []).forEach(st => {
+    const hand = Hands.get(st.pi), ls = S.learn?.[st.pi] || {};
+    for (const L of AZ) {
+      const e = st.cells[L], status = ls[L]?.status;
+      e.classList.toggle('ok', status === 'ok'); e.classList.toggle('wip', status === 'wip');
+      e.classList.toggle('saved', status !== 'ok' && status !== 'wip' && !!hand[L]?.length);
+    }
+  });
   g.players.forEach((p, pi) => {
     for (let r = 0; r < 6; r++) {
       const e = S.els[pi][r], row = p.rows[r];
@@ -1066,10 +1107,15 @@ function lockBoard(quad) {
   lastMatrix = ''; placeBoard();
   $('#calibUI').hidden = true; clearCalib(); clearTimeout(S.frameBtnT);
   $('#boardLayer').hidden = false;
-  S.screen = S.game.over ? 'end' : 'play';
+  if (S.game.over) { S.screen = 'end'; updateHud(); return; }
+  if (!S.learnDone) {
+    const saved = S.game.players.filter(p => p.active).every(p => Hands.count(p.id) >= 20);
+    showBanner({ title: 'Whiteboard Detected!', sub: saved ? 'Your saved handwriting is loaded. Rewrite any letter on the side, or tap Start.' : 'First, write A–Z in the small boxes on the side so I learn your handwriting.', timeout: 3600 });
+    enterLearn(); return;
+  }
+  S.screen = 'play';
   showBanner({ title: 'Whiteboard Detected!', sub: 'Write your guesses inside the projected lines.', timeout: 2800 });
-  if (S.screen === 'play') startOcrLoop();
-  updateHud();
+  startOcrLoop(); updateHud();
 }
 function useScanFrame() {
   const r = $('#scanFrame').getBoundingClientRect();
@@ -1186,10 +1232,133 @@ function preprocessSlot(gray, gw, gh, ox, oy, H, box) {
     id.data[p] = id.data[p + 1] = id.data[p + 2] = v; id.data[p + 3] = 255;
   }
   tctx.putImageData(id, 0, 0);
+  const mask = new Uint8Array(cw * ch); for (let i = 0; i < mask.length; i++) mask[i] = id.data[i * 4] ? 0 : 1;
   const TH = 56, PAD = 22, sc = Math.min(TH / ch, TH * 1.15 / cw), dw = Math.max(4, Math.round(cw * sc)), dh = Math.max(4, Math.round(ch * sc));
   const out = document.createElement('canvas'); out.width = dw + PAD * 2; out.height = dh + PAD * 2;
   const o = out.getContext('2d'); o.fillStyle = '#fff'; o.fillRect(0, 0, out.width, out.height); o.imageSmoothingEnabled = true; o.drawImage(tmp, PAD, PAD, dw, dh);
-  return { empty: false, sig, canvas: out };
+  return { empty: false, sig, canvas: out, mask, cw, ch };
+}
+/* --------------------------------------------------------------------------
+   PERSONAL HANDWRITING READER
+   Each letter you write in the A–Z strip becomes a template. A new letter is
+   compared to every template by "shape distance": both are shrunk to 40×40,
+   thinned to 1-px skeletons (so marker thickness doesn't matter) and we measure
+   how far each skeleton's pixels are from the other's (chamfer distance).
+   Closest template wins. Tesseract is only asked when it's a close call.
+   -------------------------------------------------------------------------- */
+const FN = 40, H_ACCEPT = 3.0, H_MARGIN = .5, H_REJECT = 4.8;
+function thin(src) {                       // Zhang–Suen thinning
+  const im = Uint8Array.from(src), w = FN, h = FN, del = []; let changed = true;
+  while (changed) {
+    changed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      del.length = 0;
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+        const i = y * w + x; if (!im[i]) continue;
+        const p2 = im[i - w], p3 = im[i - w + 1], p4 = im[i + 1], p5 = im[i + w + 1], p6 = im[i + w], p7 = im[i + w - 1], p8 = im[i - 1], p9 = im[i - w - 1];
+        const B = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9; if (B < 2 || B > 6) continue;
+        const A = (!p2 && p3) + (!p3 && p4) + (!p4 && p5) + (!p5 && p6) + (!p6 && p7) + (!p7 && p8) + (!p8 && p9) + (!p9 && p2); if (A !== 1) continue;
+        if (pass === 0 ? (p2 * p4 * p6 || p4 * p6 * p8) : (p2 * p4 * p8 || p2 * p6 * p8)) continue;
+        del.push(i);
+      }
+      if (del.length) { changed = true; for (const i of del) im[i] = 0; }
+    }
+  }
+  return im;
+}
+function distT(sk) {                       // 2-pass chamfer distance transform
+  const N = FN * FN, d = new Float32Array(N), D = 1.414;
+  for (let i = 0; i < N; i++) d[i] = sk[i] ? 0 : 1e4;
+  for (let y = 0; y < FN; y++) for (let x = 0; x < FN; x++) { const i = y * FN + x; let v = d[i];
+    if (x > 0) v = Math.min(v, d[i - 1] + 1); if (y > 0) { v = Math.min(v, d[i - FN] + 1); if (x > 0) v = Math.min(v, d[i - FN - 1] + D); if (x < FN - 1) v = Math.min(v, d[i - FN + 1] + D); } d[i] = v; }
+  for (let y = FN - 1; y >= 0; y--) for (let x = FN - 1; x >= 0; x--) { const i = y * FN + x; let v = d[i];
+    if (x < FN - 1) v = Math.min(v, d[i + 1] + 1); if (y < FN - 1) { v = Math.min(v, d[i + FN] + 1); if (x < FN - 1) v = Math.min(v, d[i + FN + 1] + D); if (x > 0) v = Math.min(v, d[i + FN - 1] + D); } d[i] = v; }
+  return d;
+}
+function finishFeature(sk, ar, holes = 0) { const pts = []; for (let i = 0; i < sk.length; i++) if (sk[i]) pts.push(i); return { sk, ar, holes, pts: Int32Array.from(pts), dt: distT(sk) }; }
+/** Closed loops in a letter (O, P, R = 1 · B = 2 · C, F, L = 0) — counts background areas not connected to the edge. */
+function countHoles(b) {
+  const N = FN * FN, seen = new Uint8Array(N), st = new Int32Array(N); let holes = 0;
+  const fill = s0 => { let sp = 0, n = 0; st[sp++] = s0; seen[s0] = 1; let edge = false;
+    while (sp) { const k = st[--sp], x = k % FN, y = (k / FN) | 0; n++; if (!x || !y || x === FN - 1 || y === FN - 1) edge = true;
+      for (const kk of [x > 0 ? k - 1 : -1, x < FN - 1 ? k + 1 : -1, y > 0 ? k - FN : -1, y < FN - 1 ? k + FN : -1]) if (kk >= 0 && !b[kk] && !seen[kk]) { seen[kk] = 1; st[sp++] = kk; } }
+    return { n, edge }; };
+  for (let i = 0; i < N; i++) if (!b[i] && !seen[i]) { const r = fill(i); if (!r.edge && r.n >= 3) holes++; }
+  return holes;
+}
+/** Rotate an ink mask (for extra template variations). */
+function rotateMask(mask, cw, ch, ang) {
+  const c = Math.cos(ang), s2 = Math.sin(ang), W2 = Math.ceil(Math.abs(cw * c) + Math.abs(ch * s2)), H2 = Math.ceil(Math.abs(cw * s2) + Math.abs(ch * c));
+  const out = new Uint8Array(W2 * H2);
+  for (let y = 0; y < H2; y++) for (let x = 0; x < W2; x++) {
+    const dx = x - W2 / 2, dy = y - H2 / 2, sx = Math.round(dx * c + dy * s2 + cw / 2), sy = Math.round(-dx * s2 + dy * c + ch / 2);
+    if (sx >= 0 && sy >= 0 && sx < cw && sy < ch) out[y * W2 + x] = mask[sy * cw + sx];
+  }
+  let x0 = W2, y0 = H2, x1 = -1, y1 = -1;
+  for (let i = 0; i < out.length; i++) if (out[i]) { const x = i % W2, y = (i / W2) | 0; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0) return { mask, cw, ch };
+  const w = x1 - x0 + 1, h = y1 - y0 + 1, m = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) m[y * w + x] = out[(y0 + y) * W2 + x0 + x];
+  return { mask: m, cw: w, ch: h };
+}
+/** A strip sample + two slightly rotated copies (people don't write perfectly upright). */
+function templatesFrom(mask, cw, ch) {
+  return [0, -.1, .1].map(a => { const r = a ? rotateMask(mask, cw, ch, a) : { mask, cw, ch }; const f = makeFeature(r.mask, r.cw, r.ch); f.strip = true; return f; });
+}
+function makeFeature(mask, cw, ch) {
+  const sc = (FN - 4) / Math.max(cw, ch), dw = Math.max(1, Math.round(cw * sc)), dh = Math.max(1, Math.round(ch * sc));
+  const ox = (FN - dw) >> 1, oy = (FN - dh) >> 1, b = new Uint8Array(FN * FN);
+  for (let y = 0; y < dh; y++) {
+    const sy0 = Math.min(ch - 1, Math.floor(y / sc)), sy1 = Math.max(sy0 + 1, Math.min(ch, Math.floor((y + 1) / sc)));
+    for (let x = 0; x < dw; x++) {
+      const sx0 = Math.min(cw - 1, Math.floor(x / sc)), sx1 = Math.max(sx0 + 1, Math.min(cw, Math.floor((x + 1) / sc)));
+      let on = 0, t = 0; for (let yy = sy0; yy < sy1; yy++) for (let xx = sx0; xx < sx1; xx++) { t++; on += mask[yy * cw + xx]; }
+      if (on / t > .3) b[(oy + y) * FN + ox + x] = 1;
+    }
+  }
+  let sk = thin(b); if (!sk.some(v => v)) sk = b;
+  return finishFeature(sk, cw / ch, countHoles(b));
+}
+function featDist(a, b) {
+  if (!a.pts.length || !b.pts.length) return 99;
+  // worse of the two directions (RMS) → a missing or extra stroke (C vs O, F vs P) really counts
+  let s1 = 0, s2 = 0; for (const p of a.pts) s1 += b.dt[p] ** 2; for (const p of b.pts) s2 += a.dt[p] ** 2;
+  return Math.max(Math.sqrt(s1 / a.pts.length), Math.sqrt(s2 / b.pts.length))
+    + Math.min(3, 1.5 * Math.abs(Math.log(a.ar / b.ar)))      // tall-and-thin vs wide
+    + .6 * Math.min(2, Math.abs((a.holes || 0) - (b.holes || 0)));   // closed loops differ
+}
+const featToJSON = f => ({ a: +f.ar.toFixed(3), h: f.holes || 0, s: f.strip ? 1 : 0, b: [...f.sk].join('').replace(/[01]{4}/g, q => parseInt(q, 2).toString(16)) });
+const featFromJSON = o => Object.assign(finishFeature(Uint8Array.from([...o.b].flatMap(h => [...parseInt(h, 16).toString(2).padStart(4, '0')].map(Number))), o.a, o.h || 0), { strip: !!o.s });
+const Hands = {   // per player: { A: [feature, …] } — strip samples (+rotations), then up to 3 learned corrections
+  data: [{}, {}],
+  get(pi) { return this.data[pi] || (this.data[pi] = {}); },
+  count(pi) { const h = this.get(pi); return Object.keys(h).filter(k => h[k].length).length; },
+  set(pi, L, fs) { this.get(pi)[L] = fs; },
+  add(pi, L, f) { const a = this.get(pi)[L] || (this.get(pi)[L] = []); a.push(f); const extra = a.filter(t => !t.strip); if (extra.length > 3) a.splice(a.indexOf(extra[0]), 1); },
+  load() { for (let pi = 0; pi < 2; pi++) { try { const raw = JSON.parse(localStorage.getItem('chalkWordleHand' + pi) || 'null'); if (raw) { const d = {}; for (const [L, arr] of Object.entries(raw)) d[L] = arr.map(featFromJSON); this.data[pi] = d; } } catch { /* ignore */ } } },
+  save(pi) { try { const out = {}; for (const [L, arr] of Object.entries(this.get(pi))) out[L] = arr.map(featToJSON); localStorage.setItem('chalkWordleHand' + pi, JSON.stringify(out)); } catch { /* storage full/private */ } },
+  reset(pi) { this.data[pi] = {}; try { localStorage.removeItem('chalkWordleHand' + pi); } catch { /* ignore */ } },
+};
+/** Ranked [letter, distance] list against this player's templates. */
+function classify(pi, f) {
+  const hand = Hands.get(pi), res = [];
+  for (const L in hand) { let best = 99; for (const t of hand[L]) best = Math.min(best, featDist(f, t)); res.push([L, best]); }
+  return res.sort((a, b) => a[1] - b[1]);
+}
+/** Decide a letter: personal templates first, Tesseract only for close calls. */
+async function readLetter(pi, c, slot) {
+  const hand = Hands.get(pi);
+  if (Hands.count(pi) >= 5) {
+    const f = makeFeature(c.mask, c.cw, c.ch); slot.lastFeat = f;
+    const r = classify(pi, f), b1 = r[0], b2 = r[1];
+    const fallback = b1 && b1[1] < H_REJECT ? b1[0] : '?';
+    if ((b1[1] < H_ACCEPT && (!b2 || b2[1] - b1[1] > H_MARGIN)) || !OCR.ready) return fallback;
+    const t = await OCR.read(c.canvas);
+    if (t === '?') return fallback;
+    if (!hand[t]?.length || r.slice(0, 3).some(x => x[0] === t)) return t;   // tie-break, or a letter you never taught
+    return fallback;
+  }
+  return OCR.ready ? OCR.read(c.canvas) : undefined;
 }
 const sigDiff = (a, b) => { let d = 0; for (let i = 0; i < 64; i++) d += Math.abs(a[i] - b[i]); return d; };
 /** Debounce: a reading only counts after two identical reads in a row. */
@@ -1205,12 +1374,28 @@ function startOcrLoop() {
   stopOcrLoop(); const gen = ++ocrGen;
   const tick = async () => {
     if (gen !== ocrGen) return;
-    try { await ocrCycle(); } catch (e) { console.warn(e); }
+    try { await (S.screen === 'learn' ? learnCycle() : ocrCycle()); } catch (e) { console.warn(e); }
     if (gen === ocrGen) ocrTimer = setTimeout(tick, 280);
   };
   tick();
 }
 function stopOcrLoop() { ocrGen++; clearTimeout(ocrTimer); }
+/** Grab a grayscale copy of just the part of the frame that covers these board boxes. */
+function grabRegion(boxes, Hbs, src) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of boxes) { const mx = b.w * .2, my = b.h * .2;
+    for (const [u, v] of [[b.x - mx, b.y - my], [b.x + b.w + mx, b.y - my], [b.x - mx, b.y + b.h + my], [b.x + b.w + mx, b.y + b.h + my]]) {
+      const [x, y] = applyH(Hbs, u, v); x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } }
+  x0 = clamp(Math.floor(x0), 0, src.w - 1); y0 = clamp(Math.floor(y0), 0, src.h - 1);
+  x1 = clamp(Math.ceil(x1), x0 + 1, src.w); y1 = clamp(Math.ceil(y1), y0 + 1, src.h);
+  const gw = x1 - x0, gh = y1 - y0; if (gw < 4 || gh < 4) return null;
+  if (grab.c.width !== gw || grab.c.height !== gh) { grab.c.width = gw; grab.c.height = gh; grab.ctx = null; }
+  const ctx = grab.ctx || (grab.ctx = grab.c.getContext('2d', { willReadFrequently: true }));
+  ctx.drawImage(src.el, x0, y0, gw, gh, 0, 0, gw, gh);
+  const d = ctx.getImageData(0, 0, gw, gh).data, gray = new Uint8Array(gw * gh);
+  for (let i = 0, p = 0; i < gray.length; i++, p += 4) gray[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8;
+  return { gray, gw, gh, x0, y0 };
+}
 async function ocrCycle() {
   const g = S.game, L = S.layout; if (!g || g.over || S.screen !== 'play' || !S.board.locked || !L) return;
   const src = getSrc(); if (!src.w) return;
@@ -1218,31 +1403,55 @@ async function ocrCycle() {
   const jobs = [];
   g.players.forEach((p, pi) => { if (!p.active || p.done) return; p.rows[p.rowIdx].slots.forEach((s, i) => { if (!s.manual) jobs.push({ pi, s, box: L.zones[pi].rows[p.rowIdx].slots[i] }); }); });
   if (jobs.length) {
-    // grab only the region around the active rows
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const j of jobs) { const b = j.box, mx = b.w * .2, my = b.h * .2;
-      for (const [u, v] of [[b.x - mx, b.y - my], [b.x + b.w + mx, b.y - my], [b.x - mx, b.y + b.h + my], [b.x + b.w + mx, b.y + b.h + my]]) {
-        const [x, y] = applyH(Hbs, u, v); x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } }
-    x0 = clamp(Math.floor(x0), 0, src.w - 1); y0 = clamp(Math.floor(y0), 0, src.h - 1);
-    x1 = clamp(Math.ceil(x1), x0 + 1, src.w); y1 = clamp(Math.ceil(y1), y0 + 1, src.h);
-    const gw = x1 - x0, gh = y1 - y0; if (gw < 4 || gh < 4) return;
-    if (grab.c.width !== gw || grab.c.height !== gh) { grab.c.width = gw; grab.c.height = gh; grab.ctx = null; }
-    const ctx = grab.ctx || (grab.ctx = grab.c.getContext('2d', { willReadFrequently: true }));
-    ctx.drawImage(src.el, x0, y0, gw, gh, 0, 0, gw, gh);
-    const d = ctx.getImageData(0, 0, gw, gh).data, gray = new Uint8Array(gw * gh);
-    for (let i = 0, p = 0; i < gray.length; i++, p += 4) gray[i] = (d[p] * 77 + d[p + 1] * 150 + d[p + 2] * 29) >> 8;
+    const reg = grabRegion(jobs.map(j => j.box), Hbs, src); if (!reg) return;
     const now = performance.now(), pending = [], crops = [];
     for (const j of jobs) {
-      const c = preprocessSlot(gray, gw, gh, x0, y0, Hbs, j.box); crops.push(c);
+      const c = preprocessSlot(reg.gray, reg.gw, reg.gh, reg.x0, reg.y0, Hbs, j.box); crops.push(c);
       if (c.empty) { applyReading(j.s, null, now); continue; }
       if (j.s.sig && j.s.sigLetter && sigDiff(j.s.sig, c.sig) < .16) { applyReading(j.s, j.s.sigLetter, now); continue; }
-      if (!OCR.ready) continue;
-      pending.push(OCR.read(c.canvas).then(letter => { j.s.sig = c.sig; j.s.sigLetter = letter; applyReading(j.s, letter, performance.now()); }).catch(() => {}));
+      pending.push(Promise.resolve(readLetter(j.pi, c, j.s)).then(letter => {
+        if (letter === undefined) return;
+        j.s.sig = c.sig; j.s.sigLetter = letter; applyReading(j.s, letter, performance.now());
+      }).catch(e => console.warn(e)));
     }
     await Promise.all(pending);
     if (S.debug) renderOcrStrip(jobs, crops);
   }
   checkAutoLock(); refreshBoard(); updateHud();
+}
+/** Learning phase: watch the A–Z boxes; a box that stays unchanged ~1 s becomes that letter's template. */
+async function learnCycle() {
+  const g = S.game, L = S.layout; if (!g || S.screen !== 'learn' || !S.board.locked || !L) return;
+  const src = getSrc(); if (!src.w) return;
+  const Hbs = solveHomography(boardRect(), S.board.quad); if (!Hbs) return;
+  const strips = L.strips.filter(st => g.players[st.pi].active); if (!strips.length) return;
+  const reg = grabRegion(strips.flatMap(st => st.cells), Hbs, src); if (!reg) return;
+  const now = performance.now();
+  for (const st of strips) {
+    const ls = S.learn[st.pi] || (S.learn[st.pi] = {});
+    for (const cell of st.cells) {
+      const c = preprocessSlot(reg.gray, reg.gw, reg.gh, reg.x0, reg.y0, Hbs, cell);
+      const k = ls[cell.L] || (ls[cell.L] = { status: 'empty', sig: null, since: 0 });
+      if (c.empty) { if (k.status !== 'ok') k.status = 'empty'; k.sig = null; continue; }
+      if (k.sig && sigDiff(k.sig, c.sig) < .12) {
+        if (k.status !== 'ok' && now - k.since > 900) { Hands.set(st.pi, cell.L, templatesFrom(c.mask, c.cw, c.ch)); k.status = 'ok'; }
+      } else { k.sig = c.sig; k.since = now; k.status = 'wip'; }
+    }
+  }
+  refreshBoard(); updateHud();
+}
+function enterLearn() {
+  S.screen = 'learn'; S.learn = S.learn || [{}, {}];
+  refreshBoard(); startOcrLoop(); updateHud();
+}
+function finishLearn() {
+  if (S.screen !== 'learn') return;
+  const act = S.game.players.filter(p => p.active);
+  act.forEach(p => Hands.save(p.id));
+  const missing = act.reduce((m, p) => m + 26 - Hands.count(p.id), 0);
+  S.learnDone = true; S.screen = 'play';
+  refreshBoard(); startOcrLoop(); updateHud();
+  toast(missing ? `Letters you skipped will use the standard reader` : 'Got your handwriting! Game on', 2600);
 }
 function checkAutoLock() {
   const g = S.game; if (!g || g.over || S.screen !== 'play') return;
@@ -1270,7 +1479,7 @@ function renderOcrStrip(jobs, crops) {
    It is fed through the exact same detector + OCR pipeline as the camera.
    ========================================================================== */
 const Demo = {
-  canvas: $('#demoCanvas'), ctx: null, dpr: 1, quad: null, strokes: [], cur: null,
+  canvas: $('#demoCanvas'), ctx: null, dpr: 1, quad: null, strokes: [], cur: null, alpha: [new Set(), new Set()],
   setup() {
     this.dpr = Math.min(2, devicePixelRatio || 1);
     this.canvas.width = Math.round(innerWidth * this.dpr); this.canvas.height = Math.round(innerHeight * this.dpr);
@@ -1317,22 +1526,30 @@ const Demo = {
     this.drawTyped(ctx, Hbs); ctx.restore();
   },
   /** Typed letters are drawn as dry-erase "handwriting" inside their slots. */
+  drawLetter(ctx, H, b, ch, seed) {
+    const tl = applyH(H, b.x, b.y), tr = applyH(H, b.x + b.w, b.y), bl = applyH(H, b.x, b.y + b.h);
+    ctx.save();
+    ctx.setTransform((tr[0] - tl[0]) / b.w, (tr[1] - tl[1]) / b.w, (bl[0] - tl[0]) / b.h, (bl[1] - tl[1]) / b.h, tl[0], tl[1]);
+    ctx.translate(b.w / 2, b.h * .9); ctx.rotate(((hashStr(seed) % 100) / 100 - .5) * .14);
+    ctx.font = `${b.h * .95}px "Permanent Marker","Marker Felt","Comic Sans MS",sans-serif`; ctx.fillText(ch, 0, 0);
+    ctx.restore();
+  },
   drawTyped(ctx, H) {
     const g = S.game, L = S.layout; ctx.fillStyle = '#1c2742'; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+    (L.strips || []).forEach(st => { const set = this.alpha[st.pi]; st.cells.forEach(c => { if (set.has(c.L)) this.drawLetter(ctx, H, c, c.L, 'a' + st.pi + c.L); }); });
     g.players.forEach((p, pi) => { if (!p.active) return;
       p.rows.forEach((row, r) => { if (r > p.rowIdx) return;
         row.slots.forEach((s, i) => { if (!s.manual) return;
-          const b = L.zones[pi].rows[r].slots[i], tl = applyH(H, b.x, b.y), tr = applyH(H, b.x + b.w, b.y), bl = applyH(H, b.x, b.y + b.h);
-          ctx.save();
-          ctx.setTransform((tr[0] - tl[0]) / b.w, (tr[1] - tl[1]) / b.w, (bl[0] - tl[0]) / b.h, (bl[1] - tl[1]) / b.h, tl[0], tl[1]);
-          ctx.translate(b.w / 2, b.h * .93); ctx.rotate(((hashStr(pi + ':' + r + ':' + i) % 100) / 100 - .5) * .14);
-          ctx.font = `${b.h * 1.02}px "Permanent Marker","Marker Felt","Comic Sans MS",sans-serif`; ctx.fillText(s.manual, 0, 0);
-          ctx.restore();
+          this.drawLetter(ctx, H, L.zones[pi].rows[r].slots[i], s.manual, pi + ':' + r + ':' + i);
         });
       });
     });
   },
   toBoard(e) { return applyH(solveHomography(this.quad, boardRect()), e.clientX * this.dpr, e.clientY * this.dpr); },
+  hitStrip(pt) {
+    for (const st of S.layout.strips) if (pt[0] > st.x - 10 && pt[0] < st.x + st.w + 10) return { pi: st.pi, strip: true, s: st.cells[0].h };
+    return null;
+  },
   hitRow(pt) {
     const g = S.game, L = S.layout;
     for (const p of g.players) {
@@ -1345,9 +1562,9 @@ const Demo = {
   bindDraw() {
     const c = this.canvas;
     c.addEventListener('pointerdown', e => {
-      if (!S.demo || S.screen !== 'play' || !S.layout) return;
+      if (!S.demo || (S.screen !== 'play' && S.screen !== 'learn') || !S.layout) return;
       e.preventDefault(); c.setPointerCapture?.(e.pointerId);
-      const pt = this.toBoard(e), tag = this.hitRow(pt), s = tag ? tag.s : S.layout.zones[0].rows[0].s;
+      const pt = this.toBoard(e), tag = this.hitStrip(pt) || (S.screen === 'play' ? this.hitRow(pt) : null), s = tag ? tag.s : S.layout.zones[0].rows[0].s;
       this.cur = { pts: [pt], w: s * .085, tag }; this.strokes.push(this.cur);
     });
     c.addEventListener('pointermove', e => {
@@ -1384,7 +1601,13 @@ function renderKeyboard() {
   $$('#kbTabs .kb-tab').forEach(t => t.setAttribute('aria-pressed', String(+t.dataset.p === S.kbPlayer)));
 }
 function onKey(k) {
-  const g = S.game; if (S.screen !== 'play' || !g || g.over) return;
+  const g = S.game;
+  if (S.screen === 'learn' && g) {             // demo: the keyboard "writes" letters into the A–Z boxes
+    if (k === 'ENTER') return finishLearn();
+    if (S.demo && k.length === 1) { Demo.alpha[S.kbPlayer].add(k); }
+    return;
+  }
+  if (S.screen !== 'play' || !g || g.over) return;
   const pi = S.kbPlayer, p = g.players[pi]; if (!p || !p.active || p.done) return;
   const row = p.rows[p.rowIdx];
   if (k === 'ENTER') { tryLock(pi, false); return; }
@@ -1399,6 +1622,10 @@ function setKeyboard(open) {
 }
 function statusText() {
   if (S.screen === 'calib') return 'Scanning for a whiteboard…';
+  if (S.screen === 'learn' && S.game) {
+    const act = S.game.players.filter(p => p.active);
+    return `Write A–Z in the side boxes · ${act.map(p => (act.length > 1 ? `P${p.id + 1} ` : '') + Hands.count(p.id) + '/26').join(' · ')}`;
+  }
   const g = S.game; if (!g) return '';
   if (S.screen === 'end') return 'Round over';
   if (!S.demo && !S.board.pinned && performance.now() - S.board.lastSeen > 3000) return 'Board out of view — overlay held in place';
@@ -1414,17 +1641,19 @@ function statusText() {
   return `${who ? who + ': ' : ''}one CAPITAL letter per line · ${n}/${g.len}`;
 }
 function updateHud() {
-  const playing = S.screen === 'play', g = S.game, both = duoBoth();
+  const playing = S.screen === 'play', learning = S.screen === 'learn', g = S.game, both = duoBoth();
   $('#status').textContent = statusText();
-  $('#hudBottom').hidden = !playing;
-  $('#keyboard').hidden = !(playing && S.kbOpen);
+  $('#hudBottom').hidden = !(playing || learning);
+  $('#gameBar').hidden = !playing; $('#learnBar').hidden = !learning;
+  $('#learnFill').hidden = !S.demo;
+  $('#keyboard').hidden = !((playing || (learning && S.demo)) && S.kbOpen);
   $('#kbBtn').setAttribute('aria-pressed', String(S.kbOpen));
   $('#kbTabs').hidden = !both;
   $('#wipeBtn').hidden = !S.demo;
   $('#lockP2').hidden = !both;
   $('#lockP1 span').textContent = both ? 'P1 · Lock' : 'Lock Guess';
-  $('#rescanBtn').hidden = !(playing || S.screen === 'end') || S.demo;
-  $('#pinBtn').hidden = !(playing || S.screen === 'end') || S.demo;
+  $('#rescanBtn').hidden = !(playing || learning || S.screen === 'end') || S.demo;
+  $('#pinBtn').hidden = !(playing || learning || S.screen === 'end') || S.demo;
   $('#eyeBtn').hidden = !playing;
   $('#ocrStrip').hidden = !(playing && S.debug);
   if (g) renderKeyboard();
@@ -1502,17 +1731,18 @@ function showCameraError(err) {
 }
 function backToMenu() {
   hideBanner(); stopOcrLoop(); Cam.stop(); clearTimeout(S.frameBtnT);
-  S.screen = 'menu'; S.board.locked = false; S.layout = null; S.els = null; S.game = null;
+  S.screen = 'menu'; S.board.locked = false; S.layout = null; S.els = null; S.stripEls = null; S.game = null;
+  S.learnDone = false; S.learn = null; Demo.alpha = [new Set(), new Set()]; Demo.strokes = [];
   $('#stage').hidden = true; $('#boardLayer').hidden = true; $('#calibUI').hidden = true; $('#board').innerHTML = '';
   const m = $('#menu'); m.hidden = false; m.classList.remove('fade-in'); void m.offsetWidth; m.classList.add('fade-in');
   renderMenu(); EraserFX.rest();
 }
 function bindHud() {
   $('#menuBtn').onclick = () => {
-    if (S.screen !== 'play') return backToMenu();
+    if (S.screen !== 'play' && S.screen !== 'learn') return backToMenu();
     showBanner({ title: 'Leave this game?', modal: true, buttons: [{ label: 'Leave', primary: true, on: backToMenu }, { label: 'Keep playing', on: hideBanner }] });
   };
-  $('#rescanBtn').onclick = () => { if (S.screen === 'play' || S.screen === 'end') { hideBanner(); enterCalibration(); } };
+  $('#rescanBtn').onclick = () => { if (['play', 'learn', 'end'].includes(S.screen)) { hideBanner(); enterCalibration(); } };
   $('#pinBtn').onclick = () => { S.board.pinned = !S.board.pinned; $('#pinBtn').setAttribute('aria-pressed', String(S.board.pinned)); toast(S.board.pinned ? 'Overlay frozen in place' : 'Overlay follows the board again'); };
   $('#eyeBtn').onclick = () => { S.debug = !S.debug; $('#eyeBtn').setAttribute('aria-pressed', String(S.debug)); if (!S.debug) $('#ocrStrip').innerHTML = ''; updateHud(); };
   $('#kbBtn').onclick = () => setKeyboard(!S.kbOpen);
@@ -1520,8 +1750,15 @@ function bindHud() {
   $('#lockP1').onclick = () => tryLock(duoBoth() ? 0 : S.game.players.findIndex(p => p.active), false);
   $('#lockP2').onclick = () => tryLock(1, false);
   $('#useFrameBtn').onclick = useScanFrame;
+  $('#learnDone').onclick = finishLearn;
+  $('#learnFill').onclick = () => { S.game.players.forEach(p => { if (p.active) [...AZ].forEach(L => Demo.alpha[p.id].add(L)); }); };
+  $('#learnReset').onclick = () => {
+    S.game.players.forEach(p => { if (p.active) { Hands.reset(p.id); S.learn[p.id] = {}; Demo.alpha[p.id].clear(); } });
+    Demo.strokes = Demo.strokes.filter(t => !t.tag?.strip);
+    refreshBoard(); updateHud(); toast('Saved handwriting cleared — write A–Z again');
+  };
   addEventListener('keydown', e => {
-    if (S.screen !== 'play' || e.target.closest?.('input')) return;
+    if ((S.screen !== 'play' && S.screen !== 'learn') || e.target.closest?.('input')) return;
     const k = e.key;
     if (/^[a-z]$/i.test(k)) onKey(k.toUpperCase());
     else if (k === 'Backspace') onKey('BACK');
@@ -1538,7 +1775,7 @@ function bindHud() {
 let lastDet = 0;
 function loop(now) {
   requestAnimationFrame(loop);
-  if (S.screen === 'calib' || S.screen === 'play' || S.screen === 'end') {
+  if (S.screen === 'calib' || S.screen === 'learn' || S.screen === 'play' || S.screen === 'end') {
     if (S.demo) Demo.render();
     const src = getSrc();
     if (src.w) {
@@ -1563,10 +1800,10 @@ addEventListener('resize', () => {
   }, 150);
 });
 function init() {
-  initMenu(); buildKeyboard(); bindHud(); EraserFX.init(); Demo.bindDraw(); FX.resize(); sizeCalib();
+  Hands.load(); initMenu(); buildKeyboard(); bindHud(); EraserFX.init(); Demo.bindDraw(); FX.resize(); sizeCalib();
   document.fonts?.load?.('40px "Permanent Marker"').catch(() => {});
   document.fonts?.ready?.then(() => { if (S.screen === 'menu') EraserFX.rest(); });
-  setInterval(() => { if (S.screen === 'play' || S.screen === 'calib') $('#status').textContent = statusText(); }, 500);
+  setInterval(() => { if (S.screen === 'play' || S.screen === 'calib' || S.screen === 'learn') $('#status').textContent = statusText(); }, 500);
   requestAnimationFrame(loop);
 }
 init();
